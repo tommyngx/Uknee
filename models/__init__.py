@@ -1,6 +1,18 @@
 import inspect
 import argparse
+import warnings
 from importlib import import_module
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Importing from timm\.models\.layers is deprecated, please import via timm\.layers",
+    category=FutureWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"Importing from timm\.models\.registry is deprecated, please import via timm\.models",
+    category=FutureWarning,
+)
 
 
 def _missing_dependency_factory(model_name, dependency, import_error):
@@ -26,7 +38,7 @@ from .CNN.ULite.ULite import ULite # (input_channel=3, num_classes=1)
 from .CNN.MMUNet.MMUNet import mmunet as MMUNet # (input_channel=3, num_classes=1)
 from .CNN.UACANet.UACANet import UACANet # (input_channel=3, num_classes=1)
 from .CNN.CSCAUNet.CSCAUNet import CSCAUNet # (input_channel=3, num_classes=1)
-from .CNN.UNet_v2.UNet_v2 import UNetV2
+UNetV2 = _optional_import(".CNN.UNet_v2.UNet_v2", "UNetV2", "UNetV2")
 from .CNN.RollingUnet.RollingUnet import Rolling_Unet_M as RollingUnet
 from .CNN.dobuleunet.dobuleunet import build_doubleunet as DoubleUNet
 from .CNN.AttU_Net.AttU_Net import AttU_Net # (input_channel=3, num_classes=1)
