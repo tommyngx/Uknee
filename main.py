@@ -23,7 +23,6 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 
 import wandb
 import torch.optim as optim
-from monai.losses import DiceCELoss, DiceLoss
 import csv
 device = torch.device(f'cuda:0' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")

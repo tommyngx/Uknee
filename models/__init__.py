@@ -1,5 +1,23 @@
 import inspect
 import argparse
+from importlib import import_module
+
+
+def _missing_dependency_factory(model_name, dependency, import_error):
+    def _missing_dependency_model(*args, **kwargs):
+        raise ModuleNotFoundError(
+            f"Model '{model_name}' requires optional dependency '{dependency}'. "
+            f"Install it only if you need that specific model."
+        ) from import_error
+    return _missing_dependency_model
+
+
+def _optional_import(module_path, attr_name, model_name):
+    try:
+        return getattr(import_module(module_path, package=__name__), attr_name)
+    except ModuleNotFoundError as exc:
+        missing_dependency = (exc.name or "unknown").split(".")[0]
+        return _missing_dependency_factory(model_name, missing_dependency, exc)
 
 
 from .CNN.MEGANet_ResNet.EGANet import eganet as MEGANet
@@ -76,7 +94,7 @@ from .Hybrid.UTNet.UTNet import utnet as UTNet
 from .Hybrid.UCTransNet.UCTransNet import UCTransNet # (input_channel=3, n_classes=1, img_size=256)
 from .Hybrid.EMCAD.networks import EMCADNet as EMCAD
 from .Hybrid.CSWin_UNet.CSWin_UNet import cswin_unet as CSWin_UNet
-from .Hybrid.D_TrAttUnet.D_TrAttUnet import d_trattunet as D_TrAttUnet
+D_TrAttUnet = _optional_import(".Hybrid.D_TrAttUnet.D_TrAttUnet", "d_trattunet", "D_TrAttUnet")
 from .Hybrid.EViT_UNet.EViT_UNet import evit_unet as EViT_UNet
 from .Hybrid.MedFormer.MedFormer import medformer as MedFormer
 from .Hybrid.MSLAU_Net.MSLAU_Net import mslau_net as MSLAU_Net
@@ -84,10 +102,10 @@ from .Hybrid.MissFormer.MissFormer import Missformer as MissFormer
 from .Hybrid.TransUnet.TransUnet import transunet as TransUnet
 from .Hybrid.MobileUViT.MobileUViT import mobileuvit_l as MobileUViT
 from .Hybrid.LGMSNet.LGMSNet import lgmsnet as LGMSNet
-from .Hybrid.SwinUNETR.SwinUNETR import swinunetr as SwinUNETR
-from .Hybrid.UNETR.UNETR import unetr as UNETR
+SwinUNETR = _optional_import(".Hybrid.SwinUNETR.SwinUNETR", "swinunetr", "SwinUNETR")
+UNETR = _optional_import(".Hybrid.UNETR.UNETR", "unetr", "UNETR")
 from .Hybrid.CFFormer.CFFormer import cfformer as CFFormer
-from .Hybrid.CENet.CENet import cenet as CENet
+CENet = _optional_import(".Hybrid.CENet.CENet", "cenet", "CENet")
 from .Hybrid.H2Former.H2Former import h2former as H2Former
 from .Hybrid.ScribFormer.ScribFormer import scribformer as ScribFormer
 # from .Hybrid.BRAUnet_plus_plus.bra_unet import braunet_plus_plus  #  bug  
@@ -103,13 +121,13 @@ from .Mamba.AC_MambaSeg.AC_MambaSeg import ac_mambaseg as AC_MambaSeg
 from .Mamba.H_vmunet.H_vmunet import h_vmunet as H_vmunet
 from .Mamba.MambaUnet.MambaUnet import mambaunet as MambaUnet
 from .Mamba.MUCM_Net.MUCM_Net import mucm_net as MUCM_Net
-from .Mamba.Swin_umamba.Swin_umamba import swin_umamba as Swin_umamba
+Swin_umamba = _optional_import(".Mamba.Swin_umamba.Swin_umamba", "swin_umamba", "Swin_umamba")
 from .Mamba.Swin_umambaD.Swin_umambaD import swin_umambad as Swin_umambaD
 from .Mamba.UltraLight_VM_UNet.UltraLight_VM_UNet import ultralight_vm_unet as UltraLight_VM_UNet
 from .Mamba.VMUNet.VMUNet import vmunet as VMUNet
 from .Mamba.VMUNetV2.VMUNetV2 import vmunetv2 as VMUNetV2
 from .Mamba.CFM_UNet.CFM_UNet import cfm_unet as CFM_UNet
-from .Mamba.MedVKAN.MedVKAN import medvkan as MedVKAN
+MedVKAN = _optional_import(".Mamba.MedVKAN.MedVKAN", "medvkan", "MedVKAN")
 
 
 def load_model_lazily(config):

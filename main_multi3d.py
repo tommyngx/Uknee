@@ -34,7 +34,6 @@ import torch.serialization
 from medpy.metric import dc,hd95
 import torch.nn as nn
 import torch.optim as optim
-from monai.losses import DiceCELoss
 from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
@@ -43,7 +42,8 @@ from torchvision import transforms
 device = torch.device(f'cuda:0' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
-from utils.util import one_hot_encoder, DiceLoss, test_single_volume
+from utils.losses import DiceLoss
+from utils.util import test_single_volume
 from models import build_model
 from dataloader.dataloader import getDataloader
 
