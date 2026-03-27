@@ -123,6 +123,7 @@ def plot_training_dashboard(
     metric_keys,
     ranking_key,
     maximize=True,
+    top_k=3,
     filename="training_dashboard.png",
     title=None,
 ):
@@ -138,7 +139,7 @@ def plot_training_dashboard(
         label: _extract_series(history_rows, key) for key, label in metric_keys
     }
     ranking_scores = _extract_series(history_rows, ranking_key)
-    top_epochs = _top_ranked_epochs(epochs, ranking_scores, maximize=maximize, top_k=2)
+    top_epochs = _top_ranked_epochs(epochs, ranking_scores, maximize=maximize, top_k=top_k)
 
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
     ax_loss, ax_metric = axes
@@ -171,7 +172,11 @@ def plot_training_dashboard(
 
     ranking_metric_values = _extract_series(history_rows, ranking_key)
     val_loss_values = loss_series.get("Validation Loss")
-    marker_styles = [("gold", "*", 220), ("orangered", "D", 90)]
+    marker_styles = [
+        ("gold", "*", 220),
+        ("orangered", "D", 90),
+        ("dodgerblue", "o", 80),
+    ]
     top_handles = []
     for rank_index, (epoch, score) in enumerate(top_epochs):
         epoch_position = np.where(epochs == epoch)[0]
