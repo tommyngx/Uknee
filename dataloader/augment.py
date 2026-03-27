@@ -1,3 +1,4 @@
+import inspect
 from typing import List
 
 import albumentations as A
@@ -46,6 +47,80 @@ def _random_flip(p: float = 0.5):
     )
 
 
+def _make_transform(transform_cls, **kwargs):
+    signature = inspect.signature(transform_cls)
+    valid_kwargs = {key: value for key, value in kwargs.items() if key in signature.parameters}
+    return transform_cls(**valid_kwargs)
+
+
+def _affine_like(shift_limit: float, scale_limit: float, rotate_limit: float, border_mode: int, p: float):
+    if hasattr(A, "Affine"):
+        return _make_transform(
+            A.Affine,
+            scale=(1.0 - scale_limit, 1.0 + scale_limit),
+            translate_percent={
+                "x": (-shift_limit, shift_limit),
+                "y": (-shift_limit, shift_limit),
+            },
+            rotate=(-rotate_limit, rotate_limit),
+            interpolation=cv2.INTER_LINEAR,
+            mask_interpolation=cv2.INTER_NEAREST,
+            border_mode=border_mode,
+            fill=0,
+            fill_mask=0,
+            p=p,
+        )
+    return _make_transform(
+        A.ShiftScaleRotate,
+        shift_limit=shift_limit,
+        scale_limit=scale_limit,
+        rotate_limit=rotate_limit,
+        border_mode=border_mode,
+        p=p,
+    )
+
+
+def _elastic_transform():
+    return _make_transform(
+        A.ElasticTransform,
+        alpha=40,
+        sigma=6,
+        alpha_affine=6,
+        interpolation=cv2.INTER_LINEAR,
+        mask_interpolation=cv2.INTER_NEAREST,
+        border_mode=cv2.BORDER_REFLECT_101,
+        p=1.0,
+    )
+
+
+def _optical_distortion():
+    return _make_transform(
+        A.OpticalDistortion,
+        distort_limit=0.05,
+        shift_limit=0.05,
+        interpolation=cv2.INTER_LINEAR,
+        mask_interpolation=cv2.INTER_NEAREST,
+        border_mode=cv2.BORDER_REFLECT_101,
+        p=1.0,
+    )
+
+
+def _gauss_noise(var_limit, p=1.0):
+    signature = inspect.signature(A.GaussNoise)
+    kwargs = {"p": p}
+    if "var_limit" in signature.parameters:
+        kwargs["var_limit"] = var_limit
+    elif "std_range" in signature.parameters:
+        low, high = var_limit
+        kwargs["std_range"] = (
+            max(0.0, low / 255.0),
+            max(0.0, high / 255.0),
+        )
+        if "mean_range" in signature.parameters:
+            kwargs["mean_range"] = (0.0, 0.0)
+    return A.GaussNoise(**kwargs)
+
+
 def _normalize_and_tensor() -> List:
     return [
         A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0),
@@ -57,31 +132,16 @@ def _standard_spatial_ops() -> List:
     return [
         A.RandomRotate90(p=0.5),
         _random_flip(p=0.5),
-        A.ShiftScaleRotate(
-            shift_limit=0.05,
-            scale_limit=0.10,
-            rotate_limit=20,
-            border_mode=cv2.BORDER_REFLECT_101,
-            p=0.5,
-        ),
+        _affine_like(shift_limit=0.05, scale_limit=0.10, rotate_limit=20, border_mode=cv2.BORDER_REFLECT_101, p=0.5),
         A.OneOf(
             [
-                A.ElasticTransform(
-                    alpha=40,
-                    sigma=6,
-                    alpha_affine=6,
-                    border_mode=cv2.BORDER_REFLECT_101,
-                ),
+                _elastic_transform(),
                 A.GridDistortion(
                     num_steps=5,
                     distort_limit=0.2,
                     border_mode=cv2.BORDER_REFLECT_101,
                 ),
-                A.OpticalDistortion(
-                    distort_limit=0.05,
-                    shift_limit=0.05,
-                    border_mode=cv2.BORDER_REFLECT_101,
-                ),
+                _optical_distortion(),
             ],
             p=0.25,
         ),
@@ -94,7 +154,7 @@ def _standard_intensity_ops() -> List:
             [
                 A.RandomBrightnessContrast(brightness_limit=0.15, contrast_limit=0.15),
                 A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8)),
-                A.GaussNoise(var_limit=(5.0, 25.0)),
+                _gauss_noise(var_limit=(5.0, 25.0)),
             ],
             p=0.35,
         )
@@ -116,7 +176,7 @@ def _strong_intensity_ops(img_size: int) -> List:
         ),
         A.OneOf(
             [
-                A.GaussNoise(var_limit=(10.0, 40.0)),
+                _gauss_noise(var_limit=(10.0, 40.0)),
                 A.MotionBlur(blur_limit=5),
                 A.Blur(blur_limit=3),
             ],
@@ -138,13 +198,7 @@ def _strong_intensity_ops(img_size: int) -> List:
 def _xray_ops() -> List:
     return [
         A.HorizontalFlip(p=0.5),
-        A.ShiftScaleRotate(
-            shift_limit=0.03,
-            scale_limit=0.08,
-            rotate_limit=10,
-            border_mode=cv2.BORDER_REFLECT_101,
-            p=0.5,
-        ),
+        _affine_like(shift_limit=0.03, scale_limit=0.08, rotate_limit=10, border_mode=cv2.BORDER_REFLECT_101, p=0.5),
         A.OneOf(
             [
                 A.CLAHE(clip_limit=4.0, tile_grid_size=(8, 8)),
@@ -155,7 +209,7 @@ def _xray_ops() -> List:
         ),
         A.OneOf(
             [
-                A.GaussNoise(var_limit=(4.0, 18.0)),
+                _gauss_noise(var_limit=(4.0, 18.0)),
                 A.Blur(blur_limit=3),
                 A.MedianBlur(blur_limit=3),
             ],

@@ -562,6 +562,7 @@ if __name__ == "__main__":
                 writer.writeheader()
             writer.writerow(error_row)
         print(f"Model {args.model} failed: {str(e)}")
-
+        raise SystemExit(1)
+    
     print(f"Model {args.model} tested successfully")
     

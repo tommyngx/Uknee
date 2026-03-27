@@ -13,6 +13,47 @@ from torchvision import transforms
 from albumentations.pytorch import ToTensorV2
 from dataloader.augment import build_tensor_train_transform, build_tensor_val_transform
 
+VALID_GENERIC_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+
+def _normalize_sample_name(sample_name):
+    return os.path.splitext(sample_name)[0]
+
+
+def _resolve_generic_mask_dir(base_dir):
+    masks_zero_dir = os.path.join(base_dir, "masks", "0")
+    if os.path.isdir(masks_zero_dir):
+        return masks_zero_dir
+    return os.path.join(base_dir, "masks")
+
+
+def _index_generic_files(directory):
+    file_map = {}
+    if not os.path.isdir(directory):
+        return file_map
+
+    for file_name in os.listdir(directory):
+        path = os.path.join(directory, file_name)
+        if not os.path.isfile(path):
+            continue
+        stem, ext = os.path.splitext(file_name)
+        if ext.lower() not in VALID_GENERIC_EXTENSIONS:
+            continue
+        file_map.setdefault(stem, path)
+    return file_map
+
+
+def _resolve_generic_pair(image_map, mask_map, case):
+    stem = _normalize_sample_name(case)
+    image_path = image_map.get(stem)
+    mask_path = mask_map.get(stem)
+    if image_path is None or mask_path is None:
+        raise FileNotFoundError(
+            f"Missing image/mask pair for sample '{stem}'. "
+            f"image_found={image_path is not None}, mask_found={mask_path is not None}"
+        )
+    return stem, image_path, mask_path
+
 
 class MedicalDataSets(Dataset):
     def __init__(
@@ -29,6 +70,10 @@ class MedicalDataSets(Dataset):
         self.transform = transform
         self.train_list = []
         self.semi_list = []
+        self._images_dir = os.path.join(self._base_dir, "images")
+        self._masks_dir = _resolve_generic_mask_dir(self._base_dir)
+        self._image_map = _index_generic_files(self._images_dir)
+        self._mask_map = _index_generic_files(self._masks_dir)
 
         if self.mode == "train":
             with open(os.path.join(self._base_dir, train_file_dir), "r") as f1:
@@ -47,10 +92,17 @@ class MedicalDataSets(Dataset):
 
     def __getitem__(self, idx):
 
-        case = self.sample_list[idx]
+        case, image_path, mask_path = _resolve_generic_pair(
+            self._image_map, self._mask_map, self.sample_list[idx]
+        )
 
-        image = cv2.imread(os.path.join(self._base_dir, 'images', case + '.png'))
-        label = cv2.imread(os.path.join(self._base_dir, 'masks', '0', case + '.png'), cv2.IMREAD_GRAYSCALE)[..., None]
+        image = cv2.imread(image_path)
+        label = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if image is None or label is None:
+            raise FileNotFoundError(
+                f"Failed to read sample '{case}'. image='{image_path}', mask='{mask_path}'"
+            )
+        label = label[..., None]
         augmented = self.transform(image=image, mask=label)
         image = augmented['image']
         label = augmented['mask']
@@ -191,6 +243,10 @@ class MedicalDataSetsVal(Dataset):
         self.transform = transform
         self.train_list = []
         self.semi_list = []
+        self._images_dir = os.path.join(self._base_dir, "images")
+        self._masks_dir = _resolve_generic_mask_dir(self._base_dir)
+        self._image_map = _index_generic_files(self._images_dir)
+        self._mask_map = _index_generic_files(self._masks_dir)
         with open(os.path.join(self._base_dir, val_file_dir), "r") as f1:
             self.sample_list = f1.readlines()
         self.sample_list = [item.replace("\n", "") for item in self.sample_list]
@@ -201,10 +257,17 @@ class MedicalDataSetsVal(Dataset):
 
     def __getitem__(self, idx):
 
-        case = self.sample_list[idx]
+        case, image_path, mask_path = _resolve_generic_pair(
+            self._image_map, self._mask_map, self.sample_list[idx]
+        )
 
-        image = cv2.imread(os.path.join(self._base_dir, 'images', case + '.png'))
-        label = cv2.imread(os.path.join(self._base_dir, 'masks', '0', case + '.png'), cv2.IMREAD_GRAYSCALE)[..., None]
+        image = cv2.imread(image_path)
+        label = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if image is None or label is None:
+            raise FileNotFoundError(
+                f"Failed to read sample '{case}'. image='{image_path}', mask='{mask_path}'"
+            )
+        label = label[..., None]
 
         augmented = self.transform(image=image, mask=label)
         image = augmented['image']
@@ -243,6 +306,10 @@ class MedicalDataSetsVal_withscale(Dataset):
         self.semi_list = []
         self.noise_type = noise_type 
         self.noise_level = noise_level
+        self._images_dir = os.path.join(self._base_dir, "images")
+        self._masks_dir = _resolve_generic_mask_dir(self._base_dir)
+        self._image_map = _index_generic_files(self._images_dir)
+        self._mask_map = _index_generic_files(self._masks_dir)
         with open(os.path.join(self._base_dir, val_file_dir), "r") as f1:
             self.sample_list = f1.readlines()
         self.sample_list = [item.replace("\n", "") for item in self.sample_list]
@@ -251,9 +318,16 @@ class MedicalDataSetsVal_withscale(Dataset):
         return len(self.sample_list)
 
     def __getitem__(self, idx):
-        case = self.sample_list[idx]
-        image = cv2.imread(os.path.join(self._base_dir, 'images', case + '.png'))
-        label = cv2.imread(os.path.join(self._base_dir, 'masks', '0', case + '.png'), cv2.IMREAD_GRAYSCALE)[..., None]
+        case, image_path, mask_path = _resolve_generic_pair(
+            self._image_map, self._mask_map, self.sample_list[idx]
+        )
+        image = cv2.imread(image_path)
+        label = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if image is None or label is None:
+            raise FileNotFoundError(
+                f"Failed to read sample '{case}'. image='{image_path}', mask='{mask_path}'"
+            )
+        label = label[..., None]
         
         if self.noise_type == 'gaussian':
             
