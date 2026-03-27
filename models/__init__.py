@@ -71,7 +71,7 @@ from .CNN.DCSAU_Net.DCSAU_Net import dcsau_net as DCSAU_Net
 from .CNN.FAT_Net.FAT_Net import fat_net as FAT_Net
 from .CNN.CFPNet_M.CFPNet_M import cfpnet_m as CFPNet_M
 from .CNN.CaraNet.CaraNet import caranet as CaraNet
-from .CNN.GH_UNet.GH_UNet import gh_unet as GH_UNet
+GH_UNet = _optional_import(".CNN.GH_UNet.GH_UNet", "gh_unet", "GH_UNet")
 from .CNN.MSRFNet.MSRFNet import msrfnet as MSRFNet
 from .CNN.LV_UNet.LV_UNet import lv_unet as LV_UNet
 from .CNN.Perspective_Unet.Perspective_Unet import perspective_unet as Perspective_Unet
