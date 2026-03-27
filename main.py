@@ -534,7 +534,14 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
             len(valloader),
         )
 
-        for i_batch, sampled_batch in enumerate(trainloader):
+        train_progress = tqdm(
+            enumerate(trainloader),
+            total=len(trainloader),
+            desc=f"Epoch [{epoch_id}/{max_epoch}] Train",
+            dynamic_ncols=True,
+            leave=True,
+        )
+        for i_batch, sampled_batch in train_progress:
             volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
             volume_batch, label_batch = volume_batch.to(device), label_batch.to(device)
 
@@ -547,8 +554,10 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
                 loss = criterion(outputs, label_batch)
 
             if not torch.isfinite(outputs).all():
+                train_progress.close()
                 _raise_non_finite_error(logger, epoch_id, i_batch, "non-finite outputs", volume_batch, label_batch, outputs)
             if not torch.isfinite(loss):
+                train_progress.close()
                 _raise_non_finite_error(logger, epoch_id, i_batch, loss.detach(), volume_batch, label_batch, outputs)
 
             iou, dice, _, _, _, _, _ = get_metrics(outputs, label_batch)
@@ -564,10 +573,23 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
             last_lr = lr_
             avg_meters['loss'].update(loss.item(), volume_batch.size(0))
             avg_meters['iou'].update(iou, volume_batch.size(0))
+            train_progress.set_postfix(
+                loss=f"{avg_meters['loss'].avg:.4f}",
+                iou=f"{avg_meters['iou'].avg:.4f}",
+                lr=f"{last_lr:.2e}",
+            )
+        train_progress.close()
 
         model.eval()
         with torch.no_grad():
-            for i_batch, sampled_batch in enumerate(valloader):
+            val_progress = tqdm(
+                enumerate(valloader),
+                total=len(valloader),
+                desc=f"Epoch [{epoch_id}/{max_epoch}] Val",
+                dynamic_ncols=True,
+                leave=True,
+            )
+            for i_batch, sampled_batch in val_progress:
                 input, target = sampled_batch['image'], sampled_batch['label']
                 input = input.to(device)
                 target = target.to(device)
@@ -576,8 +598,10 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
                 loss = criterion(output, target)
 
                 if not torch.isfinite(output).all():
+                    val_progress.close()
                     _raise_non_finite_error(logger, epoch_id, i_batch, "non-finite val outputs", input, target, output)
                 if not torch.isfinite(loss):
+                    val_progress.close()
                     _raise_non_finite_error(logger, epoch_id, i_batch, loss.detach(), input, target, output)
                 
                 iou, _, SE, PC, F1, _, ACC = get_metrics(output, target)
@@ -587,6 +611,12 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
                 avg_meters['PC'].update(PC, input.size(0))
                 avg_meters['F1'].update(F1, input.size(0))
                 avg_meters['ACC'].update(ACC, input.size(0))
+                val_progress.set_postfix(
+                    val_loss=f"{avg_meters['val_loss'].avg:.4f}",
+                    val_iou=f"{avg_meters['val_iou'].avg:.4f}",
+                    val_f1=f"{avg_meters['F1'].avg:.4f}",
+                )
+            val_progress.close()
 
         epoch_row = {
             "epoch": epoch_id,
