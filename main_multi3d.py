@@ -93,6 +93,12 @@ def parse_arguments():
     parser.add_argument('--img_size', type=int, default=256, help='img_size')
     parser.add_argument('--num_classes', type=int, default=4, help='img_size')
     parser.add_argument('--input_channel', type=int, default=3, help='img_size')
+    parser.add_argument(
+        '--aug_strategy',
+        type=str,
+        default="auto",
+        help='2D augmentation strategy: auto, none, basic, standard, strong, xray',
+    )
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--deterministic', type=int, default=1, help='whether use deterministic training')
     parser.add_argument('--z_spacing', type=float, default=1, help='z_spacing of CT scan')

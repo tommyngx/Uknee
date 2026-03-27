@@ -85,6 +85,12 @@ def parse_arguments():
     parser.add_argument('--img_size', type=int, default=256, help='img_size')
     parser.add_argument('--num_classes', type=int, default=1, help='img_size')
     parser.add_argument('--input_channel', type=int, default=3, help='img_size')
+    parser.add_argument(
+        '--aug_strategy',
+        type=str,
+        default="auto",
+        help='2D augmentation strategy: auto, none, basic, standard, strong, xray',
+    )
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--exp_name', type=str, default="default_exp", help='Experiment name')
     parser.add_argument('--zero_shot_base_dir', type=str, default="", help='zero_base_dir')

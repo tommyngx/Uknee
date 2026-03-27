@@ -140,9 +140,16 @@ Please put the dataset (e.g. BUSI) or your own dataset as the following architec
 
 #### 3. Training & Validation
 
+Available 2D augmentation presets:
+`auto`, `none`, `basic`, `standard`, `strong`, `xray`
+
+`auto` will choose a safer default by dataset type, while `strong` and `xray` are useful when you want to run augmentation ablations for research.
+
 ```python
 # BUSI (in-domain)
 python main.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --base_dir ./data/busi --dataset_name busi
+# BUSI with a stronger augmentation policy
+python main.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --base_dir ./data/busi --dataset_name busi --aug_strategy strong
 # BUSBRA (In-domain)
 python main.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --base_dir ./data/BUSBRA --dataset_name BUSBRA
 # ISIC18 (In-domain)
@@ -166,7 +173,7 @@ python main.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --base_dir 
 # Convidquex (In-domain)
 python main.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --base_dir ./data/covidquex --dataset_name covidquex
 # Montgomery (In-domain)
-python main.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --base_dir ./data/Montgomery --dataset_name Montgomery
+python main.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --base_dir ./data/Montgomery --dataset_name Montgomery --aug_strategy xray
 # DCA (In-domain)
 python main.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --base_dir ./data/dca1 --dataset_name dca1
 # Cystoidfluid (In-domain)

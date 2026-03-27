@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from PIL import Image
 from torchvision import transforms
 from albumentations.pytorch import ToTensorV2
+from dataloader.augment import build_tensor_train_transform, build_tensor_val_transform
 
 
 class MedicalDataSets(Dataset):
@@ -293,6 +294,7 @@ class KvasirSEGDataset(Dataset):
         num_workers=2,
         train_val_ratio=0.8,
         img_size=256,
+        aug_strategy="auto",
     ):
         super().__init__()
         self.batch_size = batch_size
@@ -300,58 +302,21 @@ class KvasirSEGDataset(Dataset):
         self.num_workers = num_workers
         self.train_val_ratio = train_val_ratio
         self.img_size = img_size
+        self.aug_strategy = aug_strategy
 
     def get_train_transforms(self):
-        return A.Compose(
-            [
-                A.Resize(*(self.img_size, self.img_size), interpolation=cv2.INTER_LANCZOS4),
-                A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.5),
-                A.ColorJitter(
-                    p=0.5, brightness=(0.6, 1.6), contrast=0.2, saturation=0.1, hue=0.01
-                ),
-                A.Affine(
-                    p=0.5,
-                    scale=(0.5, 1.5),
-                    translate_percent=0.125,
-                    rotate=90,
-                    interpolation=cv2.INTER_LANCZOS4,
-                ),
-                A.ElasticTransform(p=0.5, interpolation=cv2.INTER_LANCZOS4),
-                A.Normalize(
-                    mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225),
-                    max_pixel_value=255,
-                ),
-                ToTensorV2(),
-            ]
+        return build_tensor_train_transform(
+            img_size=self.img_size,
+            strategy=self.aug_strategy,
+            dataset_name="Kvasir-SEG",
+            base_dir=self.root_dir,
         )
 
     def get_val_transforms(self):
-        return A.Compose(
-            [
-                A.Resize(*(self.img_size, self.img_size), interpolation=cv2.INTER_LANCZOS4),
-                A.Normalize(
-                    mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225),
-                    max_pixel_value=255,
-                ),
-                ToTensorV2(),
-            ]
-        )
+        return build_tensor_val_transform(img_size=self.img_size)
 
     def get_test_transforms(self):
-        return A.Compose(
-            [
-                A.Resize(*(self.img_size, self.img_size), interpolation=cv2.INTER_LANCZOS4),
-                A.Normalize(
-                    mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225),
-                    max_pixel_value=255,
-                ),
-                ToTensorV2(),
-            ]
-        )
+        return build_tensor_val_transform(img_size=self.img_size)
 
     def setup(self, stage=None):
         train_images = os.listdir(os.path.join(self.root_dir, "train/images"))
@@ -511,17 +476,7 @@ class KvasirSEGDatasetVAL(Dataset):
             self.sample_list = [item.replace("\n", "") for item in self.sample_list]
 
     def get_val_transforms(self):
-        return A.Compose(
-            [
-                A.Resize(*(self.img_size, self.img_size), interpolation=cv2.INTER_LANCZOS4),
-                A.Normalize(
-                    mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225),
-                    max_pixel_value=255,
-                ),
-                ToTensorV2(),
-            ]
-        )
+        return build_tensor_val_transform(img_size=self.img_size)
 
     def setup(self, stage=None):
 
@@ -751,16 +706,9 @@ class DataScienceBowl2018Dataset(Dataset) :
         super(DataScienceBowl2018Dataset, self).__init__()
         self.dataset_dir = dataset_dir
         self.image_folder = 'stage1_train'
-        self.transform = transforms.Compose([
-                    transforms.Resize((image_size, image_size)),
-                    transforms.ToTensor(),
-                ])
-
-        self.target_transform =  transforms.Compose([
-                    transforms.Resize((image_size,image_size)),
-                    transforms.ToTensor(),
-                ])
-
+        self.image_size = image_size
+        self.transform = transform
+        self.target_transform = target_transform
         self.frame = pd.read_csv(os.path.join(dataset_dir, '{}_imageid_frame.csv'.format(mode)))
 
 
@@ -806,12 +754,25 @@ class DataScienceBowl2018Dataset(Dataset) :
             image = Image.fromarray(cv2.bitwise_not(img))
 
         if self.transform:
-            seed = random.randint(0, 2 ** 32)
-            self._set_seed(seed); image = self.transform(image)
-            self._set_seed(seed); mask = self.target_transform(mask)
-        mask[mask >= 0.5] = 1; mask[mask < 0.5] = 0
+            augmented = self.transform(image=np.array(image), mask=np.array(mask)[..., None])
+            image = augmented['image']
+            mask = augmented['mask']
+        else:
+            image = cv2.resize(np.array(image), (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
+            mask = cv2.resize(np.array(mask), (self.image_size, self.image_size), interpolation=cv2.INTER_NEAREST)[..., None]
 
-        if image.shape[0] == 1: image = image.repeat(3, 1, 1)
+        image = image.astype('float32') / 255
+        image = image.transpose(2, 0, 1)
+
+        if mask.ndim == 2:
+            mask = mask[..., None]
+        mask = mask.astype('float32') / 255
+        mask = mask.transpose(2, 0, 1)
+        mask[mask >= 0.5] = 1
+        mask[mask < 0.5] = 0
+
+        if image.shape[0] == 1:
+            image = np.repeat(image, 3, axis=0)
 
         number = len(self.frame[self.frame.ImageId == self.frame.ImageId.unique()[idx]])
         sample = {"image": image, "label": mask, "case": self.frame.ImageId.unique()[idx]}
