@@ -1,6 +1,3 @@
-from re import S
-from turtle import forward
-from xml.dom.minidom import Identified
 import torch
 import torch.nn as nn
 from torchvision.models import resnet34 as resnet
@@ -570,4 +567,3 @@ class Conv(nn.Module):
         if self.relu is not None:
             x = self.relu(x)
         return x
-
