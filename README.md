@@ -138,6 +138,14 @@ Please put the dataset (e.g. BUSI) or your own dataset as the following architec
     └── main_multi3d.py
 ```
 
+To validate a custom binary-segmentation dataset and auto-generate `train.txt` / `val.txt`:
+
+```bash
+python tools/check_dataset.py --data_dir ./data/your_dataset --val_ratio 0.2 --seed 41
+```
+
+The script checks `images/` and `masks/0/`, prints a dataset summary, and writes split files using sample names without file extensions.
+
 #### 3. Training & Validation
 
 Available 2D augmentation presets:
