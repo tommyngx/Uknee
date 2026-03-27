@@ -8,6 +8,19 @@ from dataloader.dataset_XRay import MontgomeryXRAYDataSet,MIHXRAYDataSet
 from dataloader.download import get_MedSegBench_dataset 
 from dataloader.download import INFO as MedSegBench_dataset_name_dict
 from dataloader.augment import build_train_transform, build_val_transform, resolve_aug_strategy
+import os
+
+
+CUSTOM_BINARY_DATASET_NAMES = {"custom", "custom_binary", "binary", "mydata", "mydataset"}
+
+
+def is_generic_binary_dataset(base_dir):
+    return (
+        os.path.isdir(os.path.join(base_dir, "images"))
+        and os.path.isdir(os.path.join(base_dir, "masks"))
+        and os.path.isfile(os.path.join(base_dir, "train.txt"))
+        and os.path.isfile(os.path.join(base_dir, "val.txt"))
+    )
 
 def getDataloader(args):
 
@@ -50,7 +63,9 @@ def getDataloader(args):
         db_train = CHASEDB1Dataset(base_dir=args.base_dir, mode="train", transform=train_transform)
         db_val = CHASEDB1Dataset(base_dir=args.base_dir, mode="val", transform=val_transform)
         db_test = CHASEDB1Dataset(base_dir=args.base_dir, mode="test", transform=val_transform)
-    elif args.dataset_name in ["bus","busi","isic18","tuscui"]: # for bus;busi;isic18;
+    elif args.dataset_name in ["bus","busi","isic18","tuscui"] or (
+        args.dataset_name.lower() in CUSTOM_BINARY_DATASET_NAMES or is_generic_binary_dataset(args.base_dir)
+    ): # generic binary dataset layout: images/, masks/0/, train.txt, val.txt
         db_train = MedicalDataSets(base_dir=args.base_dir, mode="train", transform=train_transform,
                                 train_file_dir=args.train_file_dir, val_file_dir=args.val_file_dir)
         db_val = MedicalDataSets(base_dir=args.base_dir, mode="val", transform=val_transform,
@@ -131,7 +146,10 @@ def getZeroShotDataloader(args):
 
     img_size = args.img_size
     val_transform = build_val_transform(img_size=img_size)
-    if args.zero_shot_dataset_name in ["busi","isic18","tuscui","bus","Benign","malignant", "stare"]:
+    if args.zero_shot_dataset_name in ["busi","isic18","tuscui","bus","Benign","malignant", "stare"] or (
+        args.zero_shot_dataset_name.lower() in CUSTOM_BINARY_DATASET_NAMES
+        or is_generic_binary_dataset(args.zero_shot_base_dir)
+    ):
         db_val = MedicalDataSetsVal(base_dir=args.zero_shot_base_dir, transform=val_transform,val_file_dir=args.val_file_dir)
     elif 'PH2' in args.zero_shot_base_dir:  # ./data/PH2Dataset/PH2
         db_val = PH2Dataset(args.zero_shot_base_dir, mode='test', transform=val_transform)
