@@ -32,6 +32,20 @@ def _resize(img_size: int):
     return A.Resize(img_size, img_size, interpolation=cv2.INTER_LINEAR)
 
 
+def _random_flip(p: float = 0.5):
+    # `A.Flip` was removed in newer albumentations releases.
+    if hasattr(A, "Flip"):
+        return A.Flip(p=p)
+    return A.OneOf(
+        [
+            A.HorizontalFlip(p=1.0),
+            A.VerticalFlip(p=1.0),
+            A.Compose([A.HorizontalFlip(p=1.0), A.VerticalFlip(p=1.0)]),
+        ],
+        p=p,
+    )
+
+
 def _normalize_and_tensor() -> List:
     return [
         A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD, max_pixel_value=255.0),
@@ -42,7 +56,7 @@ def _normalize_and_tensor() -> List:
 def _standard_spatial_ops() -> List:
     return [
         A.RandomRotate90(p=0.5),
-        A.Flip(p=0.5),
+        _random_flip(p=0.5),
         A.ShiftScaleRotate(
             shift_limit=0.05,
             scale_limit=0.10,
@@ -154,7 +168,7 @@ def _build_policy(strategy: str, img_size: int) -> List:
     if strategy == "none":
         return [_resize(img_size)]
     if strategy == "basic":
-        return [_resize(img_size), A.RandomRotate90(p=0.5), A.Flip(p=0.5)]
+        return [_resize(img_size), A.RandomRotate90(p=0.5), _random_flip(p=0.5)]
     if strategy == "standard":
         return [_resize(img_size), *_standard_spatial_ops(), *_standard_intensity_ops()]
     if strategy == "strong":

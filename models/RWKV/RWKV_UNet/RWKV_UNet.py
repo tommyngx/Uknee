@@ -1,6 +1,5 @@
 import os
 import math
-from torch.utils.cpp_extension import load
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -24,16 +23,18 @@ from typing import Callable, Dict, Optional, Type
 from .ccm.ccm import CCMix
 import timm.layers.weight_init as weight_init
 from torch.hub import load_state_dict_from_url
+from ..cuda_utils import load_wkv_extension
 inplace = True
 
 
 wkv_op1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda', 'wkv_op.cpp')
 wkv_cuda1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda', 'wkv_cuda.cu')
-print(wkv_op1)
-print(wkv_cuda1)
 T_MAX1 = 1024
-wkv_cuda1 = load(name="wkv", sources=[wkv_op1, wkv_cuda1],
-                verbose=True, extra_cuda_cflags=['-res-usage', '--maxrregcount 60', '--use_fast_math', '-O3', '-Xptxas -O3', f'-DTmax={T_MAX1}'])
+wkv_cuda1 = load_wkv_extension(
+    name="wkv_rwkv_unet",
+    sources=[wkv_op1, wkv_cuda1],
+    extra_cuda_cflags=['-res-usage', '--maxrregcount 60', '--use_fast_math', '-O3', '-Xptxas -O3', f'-DTmax={T_MAX1}'],
+)
 
 
 def num_groups(group_size: Optional[int], channels: int):

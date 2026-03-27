@@ -5,20 +5,19 @@ import torch.nn.functional as F
 import math
 from einops import rearrange, repeat
 import os
+from ..cuda_utils import load_wkv_extension
 
 
 wkv_op_dir2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda', 'wkv_op.cpp')
 wkv_cuda_dir2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda', 'wkv_cuda.cu')
 
-print(f"wkv_op: {wkv_op_dir2}")
-print(f"wkv_cuda: {wkv_cuda_dir2}")
-
-
 up_kwargs2 = {'mode': 'bilinear', 'align_corners': True}
 T_MAX2 = 512*64
-from torch.utils.cpp_extension import load
-wkv_cuda2 = load(name="wkv", sources=[wkv_op_dir2, wkv_cuda_dir2],
-                verbose=True, extra_cuda_cflags=['-res-usage', '--maxrregcount 60', f'-DTmax={T_MAX2}'])
+wkv_cuda2 = load_wkv_extension(
+    name="wkv_zig_rir",
+    sources=[wkv_op_dir2, wkv_cuda_dir2],
+    extra_cuda_cflags=['-res-usage', '--maxrregcount 60', f'-DTmax={T_MAX2}'],
+)
 
 
 

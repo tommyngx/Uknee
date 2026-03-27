@@ -1,5 +1,7 @@
 # 标准库导入
 import os
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+os.environ.setdefault('MPLBACKEND', 'Agg')
 import random
 import argparse
 import logging
@@ -12,7 +14,6 @@ import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-import wandb
 import torch.nn.functional as F
 
 cpu_num = 1
@@ -33,7 +34,6 @@ torch.set_num_threads(cpu_num)
 import torch.serialization
 import torch.nn as nn
 import torch.optim as optim
-from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -43,6 +43,12 @@ print(f"Using device: {device}")
 
 from utils.losses import DiceLoss
 from utils.binary_metrics import dice_coefficient
+from utils.training_logs import (
+    EpochLogWriter,
+    plot_training_dashboard,
+    save_training_args,
+    setup_logger,
+)
 from utils.util import test_single_volume
 from models import build_model
 from dataloader.dataloader import getDataloader
@@ -226,33 +232,29 @@ def init_dir(args):
     exp_save_dir = f'./output/{args.model}/{args.dataset_name}/{args.exp_name}/'
     os.makedirs(exp_save_dir, exist_ok=True)
     args.exp_save_dir = exp_save_dir
+    log_dir = os.path.join(exp_save_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    args.log_dir = log_dir
 
     config_file_path = os.path.join(exp_save_dir, f'config.json')
     args_dict = vars(args)
     with open(config_file_path, 'w') as f:
         json.dump(args_dict, f, indent=4)
     print(f"Config saved to {config_file_path}")
+    save_training_args(log_dir, args_dict)
 
-    writer = SummaryWriter(log_dir=f'{exp_save_dir}/tensorboard_logs/')
-    log_file = os.path.join(exp_save_dir, f'training.log')
-
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
+    log_file = os.path.join(log_dir, 'training.log')
+    logger = setup_logger(
+        log_file=log_file,
+        logger_name=f"uknee.main_multi3d.{args.model}.{args.dataset_name}.{args.exp_name}",
+    )
+    history_writer = EpochLogWriter(log_dir)
     model = build_model(config=args,input_channel=args.input_channel, num_classes=args.num_classes).to(device)
 
 
-    return exp_save_dir, writer, logger, model#, wandb
+    return exp_save_dir, log_dir, history_writer, logger, model
 
-def trainer_multi3d(args,exp_save_dir, writer, logger, model):
+def trainer_multi3d(args,exp_save_dir, log_dir, history_writer, logger, model):
 
 
     start_epoch = 0
@@ -293,6 +295,7 @@ def trainer_multi3d(args,exp_save_dir, writer, logger, model):
 
     train_loss_list = []
     val_performance_list = []
+    history_rows = []
 
     best_metric={
         "best_dice":0.0,
@@ -328,13 +331,17 @@ def trainer_multi3d(args,exp_save_dir, writer, logger, model):
                 param_group['lr'] = lr_
 
             iter_num = iter_num + 1
-            writer.add_scalar('info/lr', lr_, iter_num)
-            writer.add_scalar('info/total_loss', loss, iter_num)
             epoch_loss += loss.item()
 
         avg_epoch_loss = epoch_loss / len(trainloader)
         train_loss_list.append(avg_epoch_loss)
         logger.info('epoch %d : average loss : %f, lr: %f' % (epoch_num, avg_epoch_loss, lr_))
+
+        epoch_row = {
+            "epoch": epoch_num + 1,
+            "lr": lr_,
+            "train_loss": avg_epoch_loss,
+        }
 
         if (epoch_num + 1) % args.val_interval == 0:
             performance, mean_hd95, mean_jacard, mean_asd = inference(args=args,model=model,logger=logger,testloader=valloader)                                
@@ -343,6 +350,12 @@ def trainer_multi3d(args,exp_save_dir, writer, logger, model):
             final_metric["final_jacard"]=mean_jacard
             final_metric["final_asd"]=mean_asd
             val_performance_list.append(performance)
+            epoch_row.update({
+                "val_dice": performance,
+                "val_hd95": mean_hd95,
+                "val_jaccard": mean_jacard,
+                "val_asd": mean_asd,
+            })
             if performance > best_performance:
                 best_metric["best_dice"]=performance
                 best_metric["best_dice_with_hd95"]=mean_hd95
@@ -363,6 +376,9 @@ def trainer_multi3d(args,exp_save_dir, writer, logger, model):
                 logger.info("=> saved best model with config")
             model.train()
 
+        history_rows.append(epoch_row)
+        history_writer.append(epoch_row)
+
         if epoch_num == args.max_epochs - 1:
             final_model_save_path = os.path.join(
                 exp_save_dir,
@@ -381,31 +397,51 @@ def trainer_multi3d(args,exp_save_dir, writer, logger, model):
 
 
         
-
-    writer.close()
-
-
-    fig, axs = plt.subplots(2, 1, figsize=(12, 8))
-    epochs = list(range(len(train_loss_list)))
-
-    axs[0].plot(epochs, train_loss_list)
-    axs[0].set_title('Training Loss')
-    axs[0].set_xlabel('Epoch')
-    axs[0].set_ylabel('Loss')
-
-    axs[1].plot(epochs[::args.val_interval], val_performance_list)
-    axs[1].set_title('Validation Performance')
-    axs[1].set_xlabel('Epoch')
-    axs[1].set_ylabel('Performance')
-    plt.tight_layout()
-
-    plt.savefig(os.path.join(exp_save_dir, 'training_progress.png'))
+    plot_path, top_epochs = plot_training_dashboard(
+        log_dir=log_dir,
+        history_rows=history_rows,
+        loss_keys=[
+            ("train_loss", "Training Loss"),
+        ],
+        metric_keys=[
+            ("val_dice", "Val Dice"),
+            ("val_jaccard", "Val Jaccard"),
+            ("val_hd95", "Val HD95"),
+            ("val_asd", "Val ASD"),
+        ],
+        ranking_key="val_dice",
+        maximize=True,
+        filename="training_dashboard.png",
+        title=f"{args.model} | {args.dataset_name} | {args.exp_name}",
+    )
 
     best_metric=convert_to_numpy(best_metric)
     final_metric=convert_to_numpy(final_metric)
+    best_metric["plot_path"] = str(plot_path) if plot_path else ""
+    best_metric["log_dir"] = log_dir
+    if top_epochs:
+        best_metric["top1_epoch"] = top_epochs[0]["epoch"]
+        best_metric["top1_val_dice"] = top_epochs[0]["value"]
+    if len(top_epochs) > 1:
+        best_metric["top2_epoch"] = top_epochs[1]["epoch"]
+        best_metric["top2_val_dice"] = top_epochs[1]["value"]
+    history_writer.write_summary({
+        "best_metric": best_metric,
+        "final_metric": final_metric,
+        "top_epochs": top_epochs,
+        "plot_path": str(plot_path) if plot_path else "",
+    })
 
     logger.info(f"Training completed. Best Dice: {best_metric['best_dice']}, Best HD95: {best_metric['best_dice_with_hd95']}, Best Jaccard: {best_metric['best_dice_with_jacard']}, Best ASD: {best_metric['best_dice_with_asd']}")
     logger.info(f"Final Dice: {final_metric['final_dice']}, Final HD95: {final_metric['final_hd95']}, Final Jaccard: {final_metric['final_jacard']}, Final ASD: {final_metric['final_asd']}")
+    if top_epochs:
+        logger.info(
+            "Top epochs by val_dice: %s",
+            ", ".join(
+                f"Top{item['rank']} epoch {item['epoch']} = {item['value']:.4f}"
+                for item in top_epochs
+            ),
+        )
 
     return best_metric,final_metric
 
@@ -416,7 +452,7 @@ if __name__ == "__main__":
 
 
     print(f"\n=== Testing model: {args.model} ===")
-    exp_save_dir, writer, logger, model = init_dir(args)
+    exp_save_dir, log_dir, history_writer, logger, model = init_dir(args)
 
     row_data=vars(args)
     if args.just_for_test:
@@ -440,7 +476,7 @@ if __name__ == "__main__":
     #try:
     csv_file = f"./result/result_{args.dataset_name}_train.csv"
     file_exists = os.path.isfile(csv_file)
-    best_metric,final_metric = trainer_multi3d(args,exp_save_dir, writer, logger, model)        
+    best_metric,final_metric = trainer_multi3d(args,exp_save_dir, log_dir, history_writer, logger, model)        
     print("Best performance: ", best_metric)
     row_data.update(best_metric)
     row_data.update(final_metric)

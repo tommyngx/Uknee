@@ -1,16 +1,24 @@
 import os
+import argparse
 
 cpu_num = 1
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+os.environ.setdefault('MPLBACKEND', 'Agg')
 os.environ['OMP_NUM_THREADS'] = str(cpu_num)
 os.environ['OPENBLAS_NUM_THREADS'] = str(cpu_num)
 os.environ['MKL_NUM_THREADS'] = str(cpu_num)
 os.environ['VECLIB_MAXIMUM_THREADS'] = str(cpu_num)
 os.environ['NUMEXPR_NUM_THREADS'] = str(cpu_num)
 
+gpu_parser = argparse.ArgumentParser(add_help=False)
+gpu_parser.add_argument('--gpu', type=str, default="7", help='gpu')
+temp_args, _ = gpu_parser.parse_known_args()
+os.environ["CUDA_VISIBLE_DEVICES"] = temp_args.gpu
+print(f"Set CUDA_VISIBLE_DEVICES to {os.environ['CUDA_VISIBLE_DEVICES']}")
+
 
 
 import random
-import argparse
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import json
@@ -21,7 +29,6 @@ import torch
 torch.set_num_threads(cpu_num)
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-import wandb
 import torch.optim as optim
 import csv
 device = torch.device(f'cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -31,18 +38,14 @@ import utils.losses as losses
 from utils.metrics_medpy import get_metrics
 from utils.util import AverageMeter
 import tempfile
-from torch.utils.tensorboard import SummaryWriter
+from utils.training_logs import (
+    EpochLogWriter,
+    plot_training_dashboard,
+    save_training_args,
+    setup_logger,
+)
 from dataloader.dataloader import getDataloader,getZeroShotDataloader
 import torch.nn.functional as F
-
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--gpu', type=str, default="7", help='gpu')
-temp_args, _ = parser.parse_known_args()
-os.environ["CUDA_VISIBLE_DEVICES"] = temp_args.gpu
-print(f"Set CUDA_VISIBLE_DEVICES to {os.environ['CUDA_VISIBLE_DEVICES']}")
-
-
 
 def convert_to_numpy(data):
     if isinstance(data, torch.Tensor):
@@ -143,7 +146,7 @@ def load_model(args, model_best_or_final="best"):
 
     return model, model_path
 
-def zero_shot(args,logger,model=None,wandb=None):
+def zero_shot(args,logger,model=None):
     valloader = getZeroShotDataloader(args)
     if model is None:
         model,model_path = load_model(args)
@@ -197,30 +200,26 @@ def init_dir(args):
         exp_save_dir = f'./output/{args.model}/{args.dataset_name}/{args.exp_name}/'
     os.makedirs(exp_save_dir, exist_ok=True)
     args.exp_save_dir = exp_save_dir
+    log_dir = os.path.join(exp_save_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    args.log_dir = log_dir
 
     config_file_path = os.path.join(exp_save_dir, f'config.json')
     args_dict = vars(args)
     with open(config_file_path, 'w') as f:
         json.dump(args_dict, f, indent=4)
     print(f"Config saved to {config_file_path}")
+    save_training_args(log_dir, args_dict)
 
-    writer = SummaryWriter(log_dir=f'{exp_save_dir}/tensorboard_logs/')
-    log_file = os.path.join(exp_save_dir, f'training.log')
-
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
+    log_file = os.path.join(log_dir, 'training.log')
+    logger = setup_logger(
+        log_file=log_file,
+        logger_name=f"uknee.main.{args.model}.{args.dataset_name}.{args.exp_name}",
+    )
+    history_writer = EpochLogWriter(log_dir)
     model = build_model(config=args,input_channel=args.input_channel, num_classes=args.num_classes).to(device)
 
-    return exp_save_dir, writer, logger, model#, wandb
+    return exp_save_dir, log_dir, history_writer, logger, model
 
 
 def validate(args,logger,model):
@@ -262,7 +261,7 @@ def validate(args,logger,model):
 
 
 
-def train(args,exp_save_dir, writer, logger, model):
+def train(args,exp_save_dir, log_dir, history_writer, logger, model):
     start_epoch = 0
     base_lr = args.base_lr
     trainloader, valloader = getDataloader(args)
@@ -298,6 +297,10 @@ def train(args,exp_save_dir, writer, logger, model):
     loss_list = []
     iou_list = []
     f1_list = []
+    se_list = []
+    pc_list = []
+    acc_list = []
+    history_rows = []
 
     if args.resume:
         checkpoint_path = os.path.join(exp_save_dir, f'checkpoint.pth')
@@ -368,6 +371,7 @@ def train(args,exp_save_dir, writer, logger, model):
                 avg_meters['ACC'].update(ACC, input.size(0))
 
         train_loss_list.append(avg_meters['loss'].avg)
+        train_iou_list.append(avg_meters['iou'].avg)
         loss_list.append(avg_meters['val_loss'].avg)
         if isinstance(avg_meters['val_iou'].avg, torch.Tensor):
             iou_list.append(avg_meters['val_iou'].avg.cpu().numpy())
@@ -377,19 +381,28 @@ def train(args,exp_save_dir, writer, logger, model):
             f1_list.append(avg_meters['F1'].avg.cpu().numpy())
         else:
             f1_list.append(avg_meters['F1'].avg)
+        se_list.append(avg_meters['SE'].avg)
+        pc_list.append(avg_meters['PC'].avg)
+        acc_list.append(avg_meters['ACC'].avg)
 
-        writer.add_scalar('Train/Loss', avg_meters['loss'].avg, epoch_num)
-        writer.add_scalar('Train/IOU', avg_meters['iou'].avg, epoch_num)
-        writer.add_scalar('Val/Loss', avg_meters['val_loss'].avg, epoch_num)
-        writer.add_scalar('Val/IOU', avg_meters['val_iou'].avg, epoch_num)
-        writer.add_scalar('Val/SE', avg_meters['SE'].avg, epoch_num)
-        writer.add_scalar('Val/PC', avg_meters['PC'].avg, epoch_num)
-        writer.add_scalar('Val/F1', avg_meters['F1'].avg, epoch_num)
-        writer.add_scalar('Val/ACC', avg_meters['ACC'].avg, epoch_num)
+        epoch_row = {
+            "epoch": epoch_num + 1,
+            "lr": lr_,
+            "train_loss": avg_meters['loss'].avg,
+            "train_iou": avg_meters['iou'].avg,
+            "val_loss": avg_meters['val_loss'].avg,
+            "val_iou": avg_meters['val_iou'].avg,
+            "val_SE": avg_meters['SE'].avg,
+            "val_PC": avg_meters['PC'].avg,
+            "val_F1": avg_meters['F1'].avg,
+            "val_ACC": avg_meters['ACC'].avg,
+        }
+        history_rows.append(epoch_row)
+        history_writer.append(epoch_row)
 
 
         log_info = (
-            f"epoch [{epoch_num}/{max_epoch}]  train_loss: {avg_meters['loss'].avg:.4f}, train_iou: {avg_meters['iou'].avg:.4f} "
+            f"epoch [{epoch_num + 1}/{max_epoch}]  train_loss: {avg_meters['loss'].avg:.4f}, train_iou: {avg_meters['iou'].avg:.4f} "
             f"- val_loss {avg_meters['val_loss'].avg:.4f} - val_iou {avg_meters['val_iou'].avg:.4f} "
             f"- val_SE {avg_meters['SE'].avg:.4f} - val_PC {avg_meters['PC'].avg:.4f} "
             f"- val_F1 {avg_meters['F1'].avg:.4f} - val_ACC {avg_meters['ACC'].avg:.4f}"
@@ -398,7 +411,7 @@ def train(args,exp_save_dir, writer, logger, model):
 
         if avg_meters['val_iou'].avg > train_metric_dict["best_iou"]:
             train_metric_dict["best_iou"] = avg_meters['val_iou'].avg
-            train_metric_dict["best_epoch"] = epoch_num
+            train_metric_dict["best_epoch"] = epoch_num + 1
             train_metric_dict["best_iou_withSE"] = avg_meters['SE'].avg
             train_metric_dict["best_iou_withPC"] = avg_meters['PC'].avg
             train_metric_dict["best_iou_withF1"] = avg_meters['F1'].avg
@@ -434,35 +447,52 @@ def train(args,exp_save_dir, writer, logger, model):
             'config': vars(args),
         }, checkpoint_path)
 
-
-    writer.close()
-
-    fig, axs = plt.subplots(2, 2, figsize=(12, 8))
-    epochs = list(range(len(train_loss_list)))
-    # Plot training loss
-    axs[0, 0].plot(train_loss_list)
-    axs[0, 0].set_title('Training Loss')
-    axs[0, 0].set_xlabel('Epoch')
-    # Plot validation loss
-    axs[0, 1].plot(loss_list)
-    axs[0, 1].set_title('Validation Loss')
-    axs[0, 1].set_xlabel('Epoch')
-    # Plot validation IoU
-    axs[1, 0].plot(iou_list)
-    axs[1, 0].set_title('Validation IoU')
-    axs[1, 0].set_xlabel('Epoch')
-    # Plot validation F1
-    axs[1, 1].plot(f1_list)
-    axs[1, 1].set_title('Validation F1')
-    axs[1, 1].set_xlabel('Epoch')
-    plt.tight_layout()
-    # Save the figure
-    plt.savefig(f'{exp_save_dir}/{args.model}_{args.train_file_dir}_{args.batch_size}_{args.max_epochs}_{args.seed}_{args.base_lr}_{train_metric_dict["best_iou"]:.4f}.png')
+    plot_path, top_epochs = plot_training_dashboard(
+        log_dir=log_dir,
+        history_rows=history_rows,
+        loss_keys=[
+            ("train_loss", "Training Loss"),
+            ("val_loss", "Validation Loss"),
+        ],
+        metric_keys=[
+            ("train_iou", "Train IoU"),
+            ("val_iou", "Val IoU"),
+            ("val_F1", "Val F1"),
+            ("val_SE", "Val Recall"),
+            ("val_PC", "Val Precision"),
+            ("val_ACC", "Val Accuracy"),
+        ],
+        ranking_key="val_iou",
+        maximize=True,
+        filename="training_dashboard.png",
+        title=f"{args.model} | {args.dataset_name} | {args.exp_name}",
+    )
 
 
     train_metric_dict=convert_to_numpy(train_metric_dict)
+    train_metric_dict["plot_path"] = str(plot_path) if plot_path else ""
+    train_metric_dict["log_dir"] = log_dir
+    if top_epochs:
+        train_metric_dict["top1_epoch"] = top_epochs[0]["epoch"]
+        train_metric_dict["top1_val_iou"] = top_epochs[0]["value"]
+    if len(top_epochs) > 1:
+        train_metric_dict["top2_epoch"] = top_epochs[1]["epoch"]
+        train_metric_dict["top2_val_iou"] = top_epochs[1]["value"]
+    history_writer.write_summary({
+        "best_metrics": train_metric_dict,
+        "top_epochs": top_epochs,
+        "plot_path": str(plot_path) if plot_path else "",
+    })
     logger.info(f"Training completed. Best IoU: {train_metric_dict['best_iou']}, Best Epoch: {train_metric_dict['best_epoch']}, Best SE: {train_metric_dict['best_iou_withSE']}, Best PC: {train_metric_dict['best_iou_withPC']}, Best F1: {train_metric_dict['best_iou_withF1']}, Best ACC: {train_metric_dict['best_iou_withACC']}")
     logger.info(f"Last IoU: {train_metric_dict['last_iou']}, Last SE: {train_metric_dict['last_SE']}, Last PC: {train_metric_dict['last_PC']}, Last F1: {train_metric_dict['last_F1']}, Last ACC: {train_metric_dict['last_ACC']}")
+    if top_epochs:
+        logger.info(
+            "Top epochs by val_iou: %s",
+            ", ".join(
+                f"Top{item['rank']} epoch {item['epoch']} = {item['value']:.4f}"
+                for item in top_epochs
+            ),
+        )
 
     return train_metric_dict
 
@@ -476,7 +506,7 @@ if __name__ == "__main__":
     
     print(f"\n=== Testing model: {args.model} ===")
 
-    exp_save_dir, writer, logger, model = init_dir(args)
+    exp_save_dir, log_dir, history_writer, logger, model = init_dir(args)
     row_data=vars(args)
 
 
@@ -508,7 +538,7 @@ if __name__ == "__main__":
     try:
         csv_file = f"./result/result_{args.dataset_name}_train.csv"
         file_exists = os.path.isfile(csv_file)
-        train_metric_dict = train(args,exp_save_dir, writer, logger, model)
+        train_metric_dict = train(args,exp_save_dir, log_dir, history_writer, logger, model)
         if args.zero_shot_dataset_name !="":
             zeroshot_result=zero_shot(args,logger, model)
         else:

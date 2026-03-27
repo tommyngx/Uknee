@@ -16,11 +16,17 @@ from .scan import horizontal_forward_scan, horizontal_forward_scan_inv, horizont
 
 T_MAX3 = 4096 #128*128 2048 均不可以 # increase this if your ctx_len is long [NOTE: TAKES LOTS OF VRAM!]
 
-from torch.utils.cpp_extension import load
+from ..cuda_utils import load_wkv_extension
 
 
-wkv_cuda3 = load(name="wkv", sources=[os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda', 'wkv_op.cpp'), os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda', 'wkv_cuda.cu')],
-                verbose=True, extra_cuda_cflags=['-res-usage','--maxrregcount 60', '--use_fast_math', '-O3', '-Xptxas -O3', f'-DTmax={T_MAX3}']) #'--maxrregcount 60', 
+wkv_cuda3 = load_wkv_extension(
+    name="wkv_u_rwkv",
+    sources=[
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda', 'wkv_op.cpp'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cuda', 'wkv_cuda.cu'),
+    ],
+    extra_cuda_cflags=['-res-usage','--maxrregcount 60', '--use_fast_math', '-O3', '-Xptxas -O3', f'-DTmax={T_MAX3}'],
+) #'--maxrregcount 60', 
 
 def q_shift(input, shift_pixel=1, gamma=1/4, resolution=None):
     assert gamma <= 1/4
