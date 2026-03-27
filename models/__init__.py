@@ -1,7 +1,10 @@
 import inspect
-import argparse
+import json
 import warnings
+from functools import lru_cache
 from importlib import import_module
+from pathlib import Path
+
 
 warnings.filterwarnings(
     "ignore",
@@ -13,210 +16,209 @@ warnings.filterwarnings(
     message=r"Importing from timm\.models\.registry is deprecated, please import via timm\.models",
     category=FutureWarning,
 )
+warnings.filterwarnings(
+    "ignore",
+    message=r"Overwriting pvt_v2_b[0-5] in registry with .*",
+    category=UserWarning,
+)
 
 
-def _missing_dependency_factory(model_name, dependency, import_error):
-    def _missing_dependency_model(*args, **kwargs):
-        raise ModuleNotFoundError(
-            f"Model '{model_name}' requires optional dependency '{dependency}'. "
-            f"Install it only if you need that specific model."
-        ) from import_error
-    return _missing_dependency_model
+MODEL_REGISTRY = {
+    "MEGANet": (".CNN.MEGANet_ResNet.EGANet", "eganet"),
+    "SimpleUNet": (".CNN.SimpleUNet.SimpleUNet", "SimpleUNet"),
+    "ULite": (".CNN.ULite.ULite", "ULite"),
+    "MMUNet": (".CNN.MMUNet.MMUNet", "mmunet"),
+    "UACANet": (".CNN.UACANet.UACANet", "UACANet"),
+    "CSCAUNet": (".CNN.CSCAUNet.CSCAUNet", "CSCAUNet"),
+    "UNetV2": (".CNN.UNet_v2.UNet_v2", "UNetV2"),
+    "RollingUnet": (".CNN.RollingUnet.RollingUnet", "Rolling_Unet_M"),
+    "DoubleUNet": (".CNN.dobuleunet.dobuleunet", "build_doubleunet"),
+    "AttU_Net": (".CNN.AttU_Net.AttU_Net", "AttU_Net"),
+    "CMUNeXt": (".CNN.CMUNeXt.CMUNeXt", "CMUNeXt"),
+    "CMU_Net": (".CNN.CMU_Net.CMU_Net", "CMU_Net"),
+    "UNeXt": (".CNN.UNeXt.UNeXt", "UNeXt"),
+    "UNet3plus": (".CNN.UNet3plus.UNet3plus", "UNet3plus"),
+    "ResNet34UnetPlus": (".CNN.UNetplus.UNetplus", "ResNet34UnetPlus"),
+    "U_Net": (".CNN.U_Net.U_Net", "U_Net"),
+    "Tinyunet": (".CNN.Tinyunet.Tinyunet", "Tinyunet"),
+    "Egeunet": (".CNN.Egeunet.Egeunet", "EGEUNet"),
+    "ERDUnet": (".CNN.ERDUnet.ERDUnet", "ERDUnet"),
+    "MFMSNet": (".CNN.IS2D_models.mfmsnet", "MFMSNet"),
+    "TA_Net": (".CNN.TA_Net.TA_Net", "TA_Net"),
+    "DDANet": (".CNN.DDANet.DDANet", "ddanet"),
+    "PraNet": (".CNN.PraNet.PraNet", "PraNet"),
+    "ternausnet": (".CNN.TernausNet.TernausNet", "ternausnet"),
+    "R2U_Net": (".CNN.R2U_Net.R2U_Net", "r2unet"),
+    "CE_Net": (".CNN.CE_Net.CE_Net", "ce_net"),
+    "MultiResUNet": (".CNN.MultiResUnet.MultiResUnet", "multiresunet"),
+    "ResUNetPlusPlus": (".CNN.ResUnetPlusPlus.ResUnetPlusPlus", "resunetplusplus"),
+    "MBSNet": (".CNN.MBSNet.MBSNet", "mbsnet"),
+    "CA_Net": (".CNN.CA_Net.CA_Net", "ca_net"),
+    "kiu_net": (".CNN.KiU_Net.KiU_Net", "kiu_net"),
+    "LFU_Net": (".CNN.LFU_Net.LFU_Net", "lfu_net"),
+    "DC_UNet": (".CNN.DC_Unet.DC_Unet", "dc_unet"),
+    "ColonSegNet": (".CNN.ColonSegNet.ColonSegNet", "colonsegnet"),
+    "MALUNet": (".CNN.MALUNet.MALUNet", "malunet"),
+    "DCSAU_Net": (".CNN.DCSAU_Net.DCSAU_Net", "dcsau_net"),
+    "FAT_Net": (".CNN.FAT_Net.FAT_Net", "fat_net"),
+    "CFPNet_M": (".CNN.CFPNet_M.CFPNet_M", "cfpnet_m"),
+    "CaraNet": (".CNN.CaraNet.CaraNet", "caranet"),
+    "GH_UNet": (".CNN.GH_UNet.GH_UNet", "gh_unet"),
+    "MSRFNet": (".CNN.MSRFNet.MSRFNet", "msrfnet"),
+    "LV_UNet": (".CNN.LV_UNet.LV_UNet", "lv_unet"),
+    "Perspective_Unet": (".CNN.Perspective_Unet.Perspective_Unet", "perspective_unet"),
+    "ESKNet": (".CNN.ESKNet.ESKNet", "esknet"),
+    "CPCANet": (".CNN.CPCANet.CPCANet", "cpcanet"),
+    "UTANet": (".CNN.UTANet.UTANet", "utanet"),
+    "DDS_UNet": (".CNN.DDS_UNet.DDS_UNet", "dds_unet"),
+    "MCA_UNet": (".CNN.MCA_UNet.MCA_UNet", "mca_unet"),
+    "MDSA_UNet": (".CNN.MDSA_UNet.MDSA_UNet", "mdsa_unet"),
+    "U_KAN": (".CNN.U_KAN.U_KAN", "u_kan"),
+    "ResU_KAN": (".CNN.ResU_KAN.ResU_KAN", "resu_kan"),
+    "RAT_Net": (".CNN.RAT_Net.RAT_Net", "rat_net"),
+    "AURA_Net": (".Hybrid.AURA_Net.AURA_Net", "aura_net"),
+    "BEFUnet": (".Hybrid.BEFUnet.BEFUnet", "befunet"),
+    "CASCADE": (".Hybrid.CASCADE.CASCADE", "cascade"),
+    "G_CASCADE": (".Hybrid.G_CASCADE.G_CASCADE", "g_cascade"),
+    "ConvFormer": (".Hybrid.ConvFormer.ConvFormer", "convformer"),
+    "DA_TransUNet": (".Hybrid.DA_TransUNet.DA_TransUNet", "da_transformer"),
+    "DAEFormer": (".Hybrid.DAEFormer.DAEFormer", "daeformer"),
+    "DS_TransUNet": (".Hybrid.DS_TransUNet.DS_TransUNet", "ds_transunet"),
+    "FCBFormer": (".Hybrid.FCBFormer.FCBFormer", "fcbformer"),
+    "HiFormer": (".Hybrid.HiFormer.HiFormer", "hiformer"),
+    "LeViT_UNet": (".Hybrid.LeViT_UNet.LeViT_UNet", "levit_unet"),
+    "MERIT": (".Hybrid.MERIT.MERIT", "merit"),
+    "MT_UNet": (".Hybrid.MT_UNet.MT_UNet", "mt_unet"),
+    "TransAttUnet": (".Hybrid.TransAttUnet.TransAttUnet", "trans_attention_unet"),
+    "TransFuse": (".Hybrid.TransFuse.TransFuse", "transfuse"),
+    "TransNorm": (".Hybrid.TransNorm.TransNorm", "transnorm"),
+    "TransResUNet": (".Hybrid.TransResUNet.TransResUNet", "trans_res_unet"),
+    "UTNet": (".Hybrid.UTNet.UTNet", "utnet"),
+    "UCTransNet": (".Hybrid.UCTransNet.UCTransNet", "UCTransNet"),
+    "EMCAD": (".Hybrid.EMCAD.networks", "EMCADNet"),
+    "CSWin_UNet": (".Hybrid.CSWin_UNet.CSWin_UNet", "cswin_unet"),
+    "D_TrAttUnet": (".Hybrid.D_TrAttUnet.D_TrAttUnet", "d_trattunet"),
+    "EViT_UNet": (".Hybrid.EViT_UNet.EViT_UNet", "evit_unet"),
+    "MedFormer": (".Hybrid.MedFormer.MedFormer", "medformer"),
+    "MSLAU_Net": (".Hybrid.MSLAU_Net.MSLAU_Net", "mslau_net"),
+    "MissFormer": (".Hybrid.MissFormer.MissFormer", "Missformer"),
+    "TransUnet": (".Hybrid.TransUnet.TransUnet", "transunet"),
+    "MobileUViT": (".Hybrid.MobileUViT.MobileUViT", "mobileuvit_l"),
+    "LGMSNet": (".Hybrid.LGMSNet.LGMSNet", "lgmsnet"),
+    "SwinUNETR": (".Hybrid.SwinUNETR.SwinUNETR", "swinunetr"),
+    "UNETR": (".Hybrid.UNETR.UNETR", "unetr"),
+    "CFFormer": (".Hybrid.CFFormer.CFFormer", "cfformer"),
+    "CENet": (".Hybrid.CENet.CENet", "cenet"),
+    "H2Former": (".Hybrid.H2Former.H2Former", "h2former"),
+    "ScribFormer": (".Hybrid.ScribFormer.ScribFormer", "scribformer"),
+    "BATFormer": (".Transformer.BATFormer.BATFormer", "batformer"),
+    "Polyp_PVT": (".Transformer.Polyp_PVT.Polyp_PVT", "polyp_pvt"),
+    "SCUNet_plus_plus": (".Transformer.SCUNet_plus_plus.SCUNet_plus_plus", "scunet_plus_plus"),
+    "SwinUnet": (".Transformer.SwinUnet.SwinUnet", "swinunet"),
+    "MedT": (".Transformer.MedT.MedT", "medt"),
+    "AC_MambaSeg": (".Mamba.AC_MambaSeg.AC_MambaSeg", "ac_mambaseg"),
+    "H_vmunet": (".Mamba.H_vmunet.H_vmunet", "h_vmunet"),
+    "MambaUnet": (".Mamba.MambaUnet.MambaUnet", "mambaunet"),
+    "MUCM_Net": (".Mamba.MUCM_Net.MUCM_Net", "mucm_net"),
+    "Swin_umamba": (".Mamba.Swin_umamba.Swin_umamba", "swin_umamba"),
+    "Swin_umambaD": (".Mamba.Swin_umambaD.Swin_umambaD", "swin_umambad"),
+    "UltraLight_VM_UNet": (".Mamba.UltraLight_VM_UNet.UltraLight_VM_UNet", "ultralight_vm_unet"),
+    "VMUNet": (".Mamba.VMUNet.VMUNet", "vmunet"),
+    "VMUNetV2": (".Mamba.VMUNetV2.VMUNetV2", "vmunetv2"),
+    "CFM_UNet": (".Mamba.CFM_UNet.CFM_UNet", "cfm_unet"),
+    "MedVKAN": (".Mamba.MedVKAN.MedVKAN", "medvkan"),
+    "Zig_RiR": (".RWKV.Zig_RiR.Zig_RiR", "zig_rir"),
+    "RWKV_UNet": (".RWKV.RWKV_UNet.RWKV_UNet", "rwkv_unet"),
+    "U_RWKV": (".RWKV.U_RWKV.U_RWKV", "u_rwkv"),
+}
 
 
-def _optional_import(module_path, attr_name, model_name):
+MODEL_ID_PATH = Path(__file__).with_name("model_id.json")
+
+
+def available_models():
+    return sorted(MODEL_REGISTRY)
+
+
+@lru_cache(maxsize=1)
+def _load_model_metadata():
+    with MODEL_ID_PATH.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+@lru_cache(maxsize=None)
+def _load_model_factory(model_name):
+    if model_name not in MODEL_REGISTRY:
+        raise ValueError(
+            f"Model '{model_name}' is not registered. Available models: {available_models()}"
+        )
+
+    module_path, attr_name = MODEL_REGISTRY[model_name]
     try:
-        return getattr(import_module(module_path, package=__name__), attr_name)
+        module = import_module(module_path, package=__name__)
     except ModuleNotFoundError as exc:
-        missing_dependency = (exc.name or "unknown").split(".")[0]
-        return _missing_dependency_factory(model_name, missing_dependency, exc)
+        missing_module = exc.name or "unknown"
+        raise ModuleNotFoundError(
+            f"Model '{model_name}' could not be imported from '{module_path}'. "
+            f"Missing module: '{missing_module}'. Install that dependency only if you need this model."
+        ) from exc
+
+    try:
+        return getattr(module, attr_name)
+    except AttributeError as exc:
+        raise AttributeError(
+            f"Model '{model_name}' is registered to '{module_path}:{attr_name}', "
+            "but that symbol was not found."
+        ) from exc
 
 
-from .CNN.MEGANet_ResNet.EGANet import eganet as MEGANet
-from .CNN.SimpleUNet.SimpleUNet import SimpleUNet # (input_channel=3, num_classes=1)
-from .CNN.ULite.ULite import ULite # (input_channel=3, num_classes=1)
-from .CNN.MMUNet.MMUNet import mmunet as MMUNet # (input_channel=3, num_classes=1)
-from .CNN.UACANet.UACANet import UACANet # (input_channel=3, num_classes=1)
-from .CNN.CSCAUNet.CSCAUNet import CSCAUNet # (input_channel=3, num_classes=1)
-UNetV2 = _optional_import(".CNN.UNet_v2.UNet_v2", "UNetV2", "UNetV2")
-from .CNN.RollingUnet.RollingUnet import Rolling_Unet_M as RollingUnet
-from .CNN.dobuleunet.dobuleunet import build_doubleunet as DoubleUNet
-from .CNN.AttU_Net.AttU_Net import AttU_Net # (input_channel=3, num_classes=1)
-from .CNN.CMUNeXt.CMUNeXt import CMUNeXt # (input_channel=3, num_classes=1)
-from .CNN.CMU_Net.CMU_Net import CMU_Net # (input_channel=3, num_classes=1)
-from .CNN.UNeXt.UNeXt import UNeXt # (num_classes=1, input_channel=3)
-from .CNN.UNet3plus.UNet3plus import UNet3plus # (input_channel=3, num_classes=1)
-from .CNN.UNetplus.UNetplus import ResNet34UnetPlus # (input_channel=3, num_classes=1)
-from .CNN.U_Net.U_Net import U_Net # (input_channel=3, num_classes=1)
-from .CNN.Tinyunet.Tinyunet import Tinyunet # (input_channel=3, num_classes=1)
-from .CNN.Egeunet.Egeunet import EGEUNet as Egeunet # (input_channel=3, num_classes=1)
-from .CNN.ERDUnet.ERDUnet import ERDUnet # (input_channel=3, num_classes=1)
-from .CNN.IS2D_models.mfmsnet import MFMSNet # (num_classes=1, input_channel=1, scale_branches=3, frequency_branches=16, frequency_selection='top', frequency_selection_ratio=0.5, use_deepsupervision=True)
-from .CNN.TA_Net.TA_Net import TA_Net
-from .CNN.DDANet.DDANet import ddanet as DDANet
-from .CNN.PraNet.PraNet import PraNet # (input_channel=3, num_classes=1, pretrained=True, freeze_encoder=False, deep_supervision=False) # (ch=64, num_classes=1,, pretrained=True, freeze_encoder=False, deep_supervision=False)
-from .CNN.TernausNet.TernausNet import ternausnet
-from .CNN.R2U_Net.R2U_Net import r2unet as R2U_Net
-from .CNN.CE_Net.CE_Net import ce_net as CE_Net
-from .CNN.MultiResUnet.MultiResUnet import multiresunet as MultiResUNet
-from .CNN.ResUnetPlusPlus.ResUnetPlusPlus import resunetplusplus as ResUNetPlusPlus
-from .CNN.MBSNet.MBSNet import mbsnet as MBSNet
-from .CNN.CA_Net.CA_Net import ca_net as CA_Net
-from .CNN.KiU_Net.KiU_Net import kiu_net
-from .CNN.LFU_Net.LFU_Net import lfu_net as LFU_Net
-from .CNN.DC_Unet.DC_Unet import dc_unet as DC_UNet
-from .CNN.ColonSegNet.ColonSegNet import colonsegnet as ColonSegNet
-from .CNN.MALUNet.MALUNet import malunet as MALUNet
-from .CNN.DCSAU_Net.DCSAU_Net import dcsau_net as DCSAU_Net
-from .CNN.FAT_Net.FAT_Net import fat_net as FAT_Net
-from .CNN.CFPNet_M.CFPNet_M import cfpnet_m as CFPNet_M
-from .CNN.CaraNet.CaraNet import caranet as CaraNet
-GH_UNet = _optional_import(".CNN.GH_UNet.GH_UNet", "gh_unet", "GH_UNet")
-from .CNN.MSRFNet.MSRFNet import msrfnet as MSRFNet
-from .CNN.LV_UNet.LV_UNet import lv_unet as LV_UNet
-from .CNN.Perspective_Unet.Perspective_Unet import perspective_unet as Perspective_Unet
-from .CNN.ESKNet.ESKNet import esknet as ESKNet
-from .CNN.CPCANet.CPCANet import cpcanet as CPCANet
-from .CNN.UTANet.UTANet import utanet as UTANet
-from .CNN.DDS_UNet.DDS_UNet import dds_unet as DDS_UNet
-from .CNN.MCA_UNet.MCA_UNet import mca_unet as MCA_UNet
-from .CNN.MDSA_UNet.MDSA_UNet import mdsa_unet as MDSA_UNet
-from .CNN.U_KAN.U_KAN import u_kan as U_KAN
-from .CNN.ResU_KAN.ResU_KAN import resu_kan as ResU_KAN
-from .CNN.RAT_Net.RAT_Net import rat_net as RAT_Net
+def load_model_id(model_name):
+    for model_info in _load_model_metadata():
+        if model_info["modelname"] == model_name:
+            deep_supervision = model_info.get("deeps_supervision", 0)
+            model_id = model_info.get("id")
+            if model_id is None:
+                raise ValueError(f"Model '{model_name}' does not have a valid model_id.")
+            return model_id, deep_supervision
 
-from .Hybrid.AURA_Net.AURA_Net import aura_net as AURA_Net
-BEFUnet = _optional_import(".Hybrid.BEFUnet.BEFUnet", "befunet", "BEFUnet")
-from .Hybrid.CASCADE.CASCADE import cascade as CASCADE
-from .Hybrid.G_CASCADE.G_CASCADE import g_cascade as G_CASCADE
-from .Hybrid.ConvFormer.ConvFormer import convformer as ConvFormer
-from .Hybrid.DA_TransUNet.DA_TransUNet import da_transformer as DA_TransUNet
-from .Hybrid.DAEFormer.DAEFormer import daeformer as DAEFormer
-from .Hybrid.DS_TransUNet.DS_TransUNet import ds_transunet as DS_TransUNet
-from .Hybrid.FCBFormer.FCBFormer import fcbformer as FCBFormer
-HiFormer = _optional_import(".Hybrid.HiFormer.HiFormer", "hiformer", "HiFormer")
-from .Hybrid.LeViT_UNet.LeViT_UNet import levit_unet as LeViT_UNet
-from .Hybrid.MERIT.MERIT import merit as MERIT
-from .Hybrid.MT_UNet.MT_UNet import mt_unet as MT_UNet
-from .Hybrid.TransAttUnet.TransAttUnet import trans_attention_unet as TransAttUnet
-from .Hybrid.TransFuse.TransFuse import transfuse as TransFuse
-from .Hybrid.TransNorm.TransNorm import transnorm as TransNorm
-from .Hybrid.TransResUNet.TransResUNet import trans_res_unet as TransResUNet
-from .Hybrid.UTNet.UTNet import utnet as UTNet
-from .Hybrid.UCTransNet.UCTransNet import UCTransNet # (input_channel=3, n_classes=1, img_size=256)
-from .Hybrid.EMCAD.networks import EMCADNet as EMCAD
-from .Hybrid.CSWin_UNet.CSWin_UNet import cswin_unet as CSWin_UNet
-D_TrAttUnet = _optional_import(".Hybrid.D_TrAttUnet.D_TrAttUnet", "d_trattunet", "D_TrAttUnet")
-from .Hybrid.EViT_UNet.EViT_UNet import evit_unet as EViT_UNet
-from .Hybrid.MedFormer.MedFormer import medformer as MedFormer
-from .Hybrid.MSLAU_Net.MSLAU_Net import mslau_net as MSLAU_Net
-from .Hybrid.MissFormer.MissFormer import Missformer as MissFormer
-from .Hybrid.TransUnet.TransUnet import transunet as TransUnet
-from .Hybrid.MobileUViT.MobileUViT import mobileuvit_l as MobileUViT
-from .Hybrid.LGMSNet.LGMSNet import lgmsnet as LGMSNet
-SwinUNETR = _optional_import(".Hybrid.SwinUNETR.SwinUNETR", "swinunetr", "SwinUNETR")
-UNETR = _optional_import(".Hybrid.UNETR.UNETR", "unetr", "UNETR")
-from .Hybrid.CFFormer.CFFormer import cfformer as CFFormer
-CENet = _optional_import(".Hybrid.CENet.CENet", "cenet", "CENet")
-from .Hybrid.H2Former.H2Former import h2former as H2Former
-from .Hybrid.ScribFormer.ScribFormer import scribformer as ScribFormer
-# from .Hybrid.BRAUnet_plus_plus.bra_unet import braunet_plus_plus  #  bug  
-
-from .Transformer.BATFormer.BATFormer import batformer as BATFormer
-from .Transformer.Polyp_PVT.Polyp_PVT import polyp_pvt as Polyp_PVT
-from .Transformer.SCUNet_plus_plus.SCUNet_plus_plus import scunet_plus_plus as SCUNet_plus_plus
-from .Transformer.SwinUnet.SwinUnet import swinunet as SwinUnet
-from .Transformer.MedT.MedT import medt as MedT
+    raise ValueError(f"Model '{model_name}' not found in {MODEL_ID_PATH}.")
 
 
-from .Mamba.AC_MambaSeg.AC_MambaSeg import ac_mambaseg as AC_MambaSeg
-from .Mamba.H_vmunet.H_vmunet import h_vmunet as H_vmunet
-from .Mamba.MambaUnet.MambaUnet import mambaunet as MambaUnet
-from .Mamba.MUCM_Net.MUCM_Net import mucm_net as MUCM_Net
-Swin_umamba = _optional_import(".Mamba.Swin_umamba.Swin_umamba", "swin_umamba", "Swin_umamba")
-from .Mamba.Swin_umambaD.Swin_umambaD import swin_umambad as Swin_umambaD
-from .Mamba.UltraLight_VM_UNet.UltraLight_VM_UNet import ultralight_vm_unet as UltraLight_VM_UNet
-from .Mamba.VMUNet.VMUNet import vmunet as VMUNet
-from .Mamba.VMUNetV2.VMUNetV2 import vmunetv2 as VMUNetV2
-from .Mamba.CFM_UNet.CFM_UNet import cfm_unet as CFM_UNet
-MedVKAN = _optional_import(".Mamba.MedVKAN.MedVKAN", "medvkan", "MedVKAN")
+def _instantiate_model(model_factory, kwargs):
+    try:
+        signature = inspect.signature(model_factory)
+    except (TypeError, ValueError):
+        return model_factory(**kwargs)
+
+    accepts_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if accepts_var_kwargs:
+        return model_factory(**kwargs)
+
+    unexpected_kwargs = [
+        key for key in kwargs if key not in signature.parameters
+    ]
+    if unexpected_kwargs:
+        factory_name = getattr(model_factory, "__name__", repr(model_factory))
+        raise TypeError(
+            f"Model factory '{factory_name}' does not accept keyword arguments: {unexpected_kwargs}"
+        )
+
+    return model_factory(**kwargs)
 
 
-def load_model_lazily(config):
-    if config.model == "Zig_RiR":
-        from .RWKV.Zig_RiR.Zig_RiR import zig_rir as Zig_RiR
-        return Zig_RiR(input_channel=config.input_channel,num_classes=config.num_classes)
-
-    elif config.model == "RWKV_UNet":
-        from .RWKV.RWKV_UNet.RWKV_UNet import rwkv_unet as RWKV_UNet
-        return RWKV_UNet(input_channel=config.input_channel,num_classes=config.num_classes)
-
-    elif config.model == "U_RWKV":
-        from .RWKV.U_RWKV.U_RWKV import u_rwkv as U_RWKV
-        return U_RWKV(input_channel=config.input_channel,num_classes=config.num_classes)
-
-    else:
-        raise ValueError(f"Unsupported model name: {config.model}. Supported models are: 'zig_rir', 'rwkv_unet', 'u_rwkv'.")
-        return None
-
-
-
-def load_model_id(modelname):
-    """读取model_id.json"""
-    import json
-    import os
-    model_id_path = './models/model_id.json'
-    with open(model_id_path, 'r') as f:
-        model_ids = json.load(f)
-    for model_info in model_ids:
-        if model_info['modelname'] == modelname:
-            deep_supervision = model_info.get('deeps_supervision', 0)
-            id = model_info.get('id', None)
-            if id is None:
-                print(f"Model {modelname} does not have a valid model_id.")
-                return None
-            return id,deep_supervision
-    print(f"Model {modelname} not found in model_id.json.")
-    return None
-
-
-
-def build_model(config,**kwargs):
-
-    model_name= config.model
-    
-    if model_name in ['Zig_RiR', 'RWKV_UNet', 'U_RWKV']:
-        return load_model_lazily(config)
-    model_id,config.do_deeps = load_model_id(model_name)
+def build_model(config, **kwargs):
+    model_name = config.model
+    model_id, config.do_deeps = load_model_id(model_name)
     print(f"Building model {model_name} with model_id {model_id} and do_deeps {config.do_deeps}")
-    if model_id is not None:
-        print(f"Using model_id {model_id} for model {model_name}")
-        config.model_id = model_id
-    else:
-        print(f"No model_id found for model {model_name}, using default.")
-        exit(0)
+    config.model_id = model_id
+    print(f"Using model_id {model_id} for model {model_name}")
 
-    
-
-    # Get the model class from the current module's globals
-    if model_name not in globals():
-        raise ValueError(f"Model {model_name} not found. Available models: {list(filter(lambda x: not x.startswith('_'), globals().keys()))}")
-    
-    model_class = globals()[model_name]
-    
-    # Get the signature of the model's constructor
-    sig = inspect.signature(model_class.__init__)
-    
-    # Filter out kwargs that are not in the constructor's signature
-    model_args = {k: v for k, v in kwargs.items() if k in sig.parameters}
-    print(f" kwargs: {model_args}")
-    if 'self' not in model_args:
-        return model_class(**kwargs)
+    model_factory = _load_model_factory(model_name)
+    print(f"kwargs: {kwargs}")
+    return _instantiate_model(model_factory, kwargs)
 
 
-    # Check for unexpected arguments
-    unexpected_args = {k: v for k, v in kwargs.items() if k not in sig.parameters and k != 'self'}
-    if unexpected_args:
-        raise TypeError(f"Got unexpected keyword arguments: {list(unexpected_args.keys())}")
-    print(f"Building model {model_name} with arguments: {model_args}")
-    return model_class(**model_args)
+__all__ = ["available_models", "build_model", "load_model_id"]
