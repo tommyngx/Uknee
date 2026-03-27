@@ -542,10 +542,11 @@ class MultiScaleBlock(nn.Module):
 ############ Test ############
 import numpy as np
 import torch
-from medpy import metric
 from scipy.ndimage import zoom
 import torch.nn as nn
 import SimpleITK as sitk
+
+from utils.binary_metrics import dice_coefficient, hd95
 
 
 class DiceLoss(nn.Module):
@@ -591,9 +592,9 @@ def calculate_metric_percase(pred, gt):
     pred[pred > 0] = 1
     gt[gt > 0] = 1
     if pred.sum() > 0 and gt.sum()>0:
-        dice = metric.binary.dc(pred, gt)
-        hd95 = metric.binary.hd95(pred, gt)
-        return dice, hd95
+        dice = dice_coefficient(pred, gt, zero_division=0.0)
+        hd95_value = hd95(pred, gt)
+        return dice, hd95_value
     elif pred.sum() > 0 and gt.sum()==0:
         return 1, 0
     else:

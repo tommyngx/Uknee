@@ -31,7 +31,6 @@ print(f"Set CUDA_VISIBLE_DEVICES to {os.environ['CUDA_VISIBLE_DEVICES']}")
 import torch
 torch.set_num_threads(cpu_num)
 import torch.serialization
-from medpy.metric import dc,hd95
 import torch.nn as nn
 import torch.optim as optim
 from tensorboardX import SummaryWriter
@@ -43,6 +42,7 @@ device = torch.device(f'cuda:0' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 from utils.losses import DiceLoss
+from utils.binary_metrics import dice_coefficient
 from utils.util import test_single_volume
 from models import build_model
 from dataloader.dataloader import getDataloader
@@ -212,7 +212,11 @@ def val(valloader,net,Best_dcs ):
         val_outputs = p1 + p2 + p3 + p4
         val_outputs = torch.argmax(torch.softmax(val_outputs, dim=1), dim=1).squeeze(0)
         
-        dc_sum+=dc(val_outputs.cpu().data.numpy(),val_label_batch[:].cpu().data.numpy())
+        dc_sum += dice_coefficient(
+            val_outputs.cpu().data.numpy(),
+            val_label_batch[:].cpu().data.numpy(),
+            zero_division=0.0,
+        )
     performance = dc_sum / len(valloader)
     logging.info('Testing performance in val model: mean_dice : %f, best_dice : %f' % (performance, Best_dcs))
 

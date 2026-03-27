@@ -39,16 +39,9 @@ import torch
 
 import torch.nn as nn
 import numpy as np
-from medpy import metric
 from scipy.ndimage import zoom
-import seaborn as sns
 
-import SimpleITK as sitk
-import pandas as pd
-
-
-from thop import profile
-from thop import clever_format
+from utils.binary_metrics import assd, dice_coefficient, hd95, jaccard_index
 
 
 def clip_gradient(optimizer, grad_clip):
@@ -104,6 +97,8 @@ def CalParams(model, input_tensor):
     :param input_tensor:
     :return:
     """
+    from thop import clever_format, profile
+
     flops, params = profile(model, inputs=(input_tensor,))
     flops, params = clever_format([flops, params], "%.3f")
     print('[Statistics Information]\nFLOPs: {}\nParams: {}'.format(flops, params))
@@ -168,11 +163,11 @@ def calculate_metric_percase(pred, gt):
     pred[pred > 0] = 1
     gt[gt > 0] = 1
     if pred.sum() > 0 and gt.sum()>0:
-        dice = metric.binary.dc(pred, gt)
-        hd95 = metric.binary.hd95(pred, gt)
-        jaccard = metric.binary.jc(pred, gt)
-        asd = metric.binary.asd(pred, gt)
-        return dice, hd95, jaccard, asd
+        dice = dice_coefficient(pred, gt, zero_division=0.0)
+        hd95_value = hd95(pred, gt)
+        jaccard = jaccard_index(pred, gt, zero_division=0.0)
+        asd = assd(pred, gt)
+        return dice, hd95_value, jaccard, asd
     elif pred.sum() > 0 and gt.sum()==0:
         return 1, 0, 1, 0
     else:
@@ -182,7 +177,7 @@ def calculate_dice_percase(pred, gt):
     pred[pred > 0] = 1
     gt[gt > 0] = 1
     if pred.sum() > 0 and gt.sum()>0:
-        dice = metric.binary.dc(pred, gt)
+        dice = dice_coefficient(pred, gt, zero_division=0.0)
         return dice
     elif pred.sum() > 0 and gt.sum()==0:
         return 1
