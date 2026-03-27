@@ -86,7 +86,7 @@ from .CNN.ResU_KAN.ResU_KAN import resu_kan as ResU_KAN
 from .CNN.RAT_Net.RAT_Net import rat_net as RAT_Net
 
 from .Hybrid.AURA_Net.AURA_Net import aura_net as AURA_Net
-from .Hybrid.BEFUnet.BEFUnet import befunet as BEFUnet
+BEFUnet = _optional_import(".Hybrid.BEFUnet.BEFUnet", "befunet", "BEFUnet")
 from .Hybrid.CASCADE.CASCADE import cascade as CASCADE
 from .Hybrid.G_CASCADE.G_CASCADE import g_cascade as G_CASCADE
 from .Hybrid.ConvFormer.ConvFormer import convformer as ConvFormer
@@ -94,7 +94,7 @@ from .Hybrid.DA_TransUNet.DA_TransUNet import da_transformer as DA_TransUNet
 from .Hybrid.DAEFormer.DAEFormer import daeformer as DAEFormer
 from .Hybrid.DS_TransUNet.DS_TransUNet import ds_transunet as DS_TransUNet
 from .Hybrid.FCBFormer.FCBFormer import fcbformer as FCBFormer
-from .Hybrid.HiFormer.HiFormer import hiformer as HiFormer
+HiFormer = _optional_import(".Hybrid.HiFormer.HiFormer", "hiformer", "HiFormer")
 from .Hybrid.LeViT_UNet.LeViT_UNet import levit_unet as LeViT_UNet
 from .Hybrid.MERIT.MERIT import merit as MERIT
 from .Hybrid.MT_UNet.MT_UNet import mt_unet as MT_UNet
