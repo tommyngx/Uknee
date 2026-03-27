@@ -93,6 +93,7 @@ def parse_arguments():
     )
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--exp_name', type=str, default="default_exp", help='Experiment name')
+    parser.add_argument('--output_dir', type=str, default="", help='Custom output directory. Defaults to ./output/{model}/{dataset_name}/{exp_name}/')
     parser.add_argument('--zero_shot_base_dir', type=str, default="", help='zero_base_dir')
     parser.add_argument('--zero_shot_dataset_name', type=str, default="", help='zero_shot_dataset_name')
     parser.add_argument('--do_deeps', type=bool, default=False, help='Use deep supervision')
@@ -191,7 +192,10 @@ def zero_shot(args,logger,model=None,wandb=None):
 
 
 def init_dir(args):
-    exp_save_dir = f'./output/{args.model}/{args.dataset_name}/{args.exp_name}/'
+    if args.output_dir:
+        exp_save_dir = os.path.abspath(os.path.expanduser(args.output_dir))
+    else:
+        exp_save_dir = f'./output/{args.model}/{args.dataset_name}/{args.exp_name}/'
     os.makedirs(exp_save_dir, exist_ok=True)
     args.exp_save_dir = exp_save_dir
 
