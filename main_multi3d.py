@@ -335,7 +335,7 @@ def trainer_multi3d(args,exp_save_dir, log_dir, history_writer, logger, model):
 
         avg_epoch_loss = epoch_loss / len(trainloader)
         train_loss_list.append(avg_epoch_loss)
-        logger.info('epoch %d : average loss : %f, lr: %f' % (epoch_num, avg_epoch_loss, lr_))
+        logger.info('epoch %d : average loss : %f, lr: %f' % (epoch_num + 1, avg_epoch_loss, lr_))
 
         epoch_row = {
             "epoch": epoch_num + 1,
@@ -391,7 +391,7 @@ def trainer_multi3d(args,exp_save_dir, log_dir, history_writer, logger, model):
                 'epoch': epoch_num + 1,}, final_model_save_path)
             logger.info("=> saved final model with config")
 
-        logger.info(f"current epoch:{epoch_num}")
+        logger.info(f"current epoch:{epoch_num + 1}")
         logger.info(f"best_dice:{best_metric['best_dice']} best_dice_with_hd95:{best_metric['best_dice_with_hd95']} best_dice_with_jacard:{best_metric['best_dice_with_jacard']} best_dice_with_asd:{best_metric['best_dice_with_asd']} ")
         logger.info(f"final_dice:{final_metric['final_dice']} final_hd95:{final_metric['final_hd95']} final_jacard:{final_metric['final_jacard']} final_asd:{final_metric['final_asd']} ")
 
