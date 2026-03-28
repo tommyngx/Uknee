@@ -97,7 +97,7 @@ def parse_arguments():
     )
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--exp_name', type=str, default="default_exp", help='Experiment name')
-    parser.add_argument('--output_dir', type=str, default="", help='Custom output directory. Defaults to ./output/{exp_name}/')
+    parser.add_argument('--output_dir', type=str, default="", help='Base output directory. Run artifacts are saved under {output_dir}/{exp_name}/. Defaults to ./output/{exp_name}/')
     parser.add_argument('--zero_shot_base_dir', type=str, default="", help='zero_base_dir')
     parser.add_argument('--zero_shot_dataset_name', type=str, default="", help='zero_shot_dataset_name')
     parser.add_argument('--do_deeps', type=bool, default=False, help='Use deep supervision')
@@ -377,10 +377,17 @@ def zero_shot(args,logger,model=None):
 
 
 def init_dir(args):
+    exp_name = (args.exp_name or "default_exp").strip() or "default_exp"
     if args.output_dir:
-        exp_save_dir = os.path.abspath(os.path.expanduser(args.output_dir))
+        base_output_dir = os.path.abspath(os.path.expanduser(args.output_dir))
     else:
-        exp_save_dir = os.path.abspath(os.path.join('./output', args.exp_name))
+        base_output_dir = os.path.abspath('./output')
+
+    if os.path.basename(os.path.normpath(base_output_dir)) == exp_name:
+        exp_save_dir = base_output_dir
+    else:
+        exp_save_dir = os.path.join(base_output_dir, exp_name)
+
     os.makedirs(exp_save_dir, exist_ok=True)
     args.exp_save_dir = exp_save_dir
 
