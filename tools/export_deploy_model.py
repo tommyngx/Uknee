@@ -57,7 +57,7 @@ def parse_args():
         "--export_format",
         type=str,
         default="auto",
-        choices=["auto", "torchscript", "bundle"],
+        choices=["auto", "torchscript", "bundle", "pickle"],
         help="Deployment artifact format. 'auto' uses TorchScript when possible and falls back to bundle.",
     )
     parser.add_argument("--num_samples", type=int, default=3, help="Number of random samples for preview")
@@ -238,6 +238,10 @@ def export_bundle_model(output_path: Path, config_dict, state_dict, checkpoint_p
     torch.save(bundle, output_path)
 
 
+def export_pickled_model(output_path: Path, model: nn.Module):
+    torch.save(model, output_path)
+
+
 def load_bundle_model(bundle_path: Path, device: torch.device):
     bundle = torch.load(bundle_path, map_location=device, weights_only=False)
     config = SimpleNamespace(**bundle["config"])
@@ -251,9 +255,20 @@ def load_bundle_model(bundle_path: Path, device: torch.device):
     return SegmentationInferenceWrapper(model).to(device).eval(), bundle
 
 
+def load_pickled_model(model_path: Path, device: torch.device):
+    model = torch.load(model_path, map_location=device, weights_only=False)
+    if isinstance(model, nn.Module):
+        model = model.to(device).eval()
+    else:
+        raise TypeError(f"Pickled artifact did not contain an nn.Module: {type(model)}")
+    return model
+
+
 def should_prefer_bundle(export_format: str, model_name: str):
     if export_format == "bundle":
         return True
+    if export_format == "pickle":
+        return False
     if export_format == "torchscript":
         return False
     return "RWKV" in model_name
@@ -292,7 +307,15 @@ def main():
     export_format = args.export_format
     export_notes = []
 
-    if should_prefer_bundle(export_format, config.model):
+    if export_format == "pickle":
+        deploy_model_path = output_dir / "model_deploy_pickle.pth"
+        export_pickled_model(deploy_model_path, wrapper)
+        converted_model = load_pickled_model(deploy_model_path, device)
+        actual_export_format = "pickle"
+        export_notes.append(
+            "Pickle export avoids an explicit build_model() call at inference time, but it still requires the same repo modules and custom ops to be importable."
+        )
+    elif should_prefer_bundle(export_format, config.model):
         deploy_model_path = output_dir / "model_deploy_bundle.pth"
         export_bundle_model(
             output_path=deploy_model_path,
@@ -387,7 +410,7 @@ def main():
     if "RWKV" in config.model:
         report["runtime_note"] = (
             "RWKV models in this project rely on the registered custom WKV operator. "
-            "The deploy bundle keeps config + weights together, but inference still needs this repo/runtime."
+            "Any export format here still needs this repo/runtime available for inference."
         )
 
     report_path = output_dir / "deployment_report.json"
