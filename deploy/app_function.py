@@ -8,6 +8,9 @@ import torch
 from PIL import Image
 
 
+DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _resolve_device(device: str):
     if device == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,7 +43,7 @@ def _to_pil_image(image_input):
 
 def load_model(weight_path, repo_root=None, device="auto", threshold=0.5):
     if repo_root is None:
-        repo_root = Path(__file__).resolve().parent
+        repo_root = DEFAULT_REPO_ROOT
     repo_root = str(Path(repo_root).resolve())
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)

@@ -1,15 +1,25 @@
 import base64
 import os
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from app_function import load_model, predict_to_file
+DEPLOY_DIR = Path(__file__).resolve().parent
+REPO_ROOT_DEFAULT = DEPLOY_DIR.parent
+
+if str(REPO_ROOT_DEFAULT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT_DEFAULT))
+
+try:
+    from .app_function import load_model, predict_to_file
+except ImportError:
+    from deploy.app_function import load_model, predict_to_file
 
 
-REPO_ROOT = Path(os.environ.get("REPO_ROOT", Path(__file__).resolve().parent))
+REPO_ROOT = Path(os.environ.get("REPO_ROOT", REPO_ROOT_DEFAULT))
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", "/content/kneeSeg/RMKV_kneeSeg.pth"))
 DEVICE = os.environ.get("DEVICE", "auto")
 THRESHOLD = float(os.environ.get("THRESHOLD", "0.5"))
