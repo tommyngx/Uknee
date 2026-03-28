@@ -42,7 +42,7 @@ class SegmentationInferenceWrapper(nn.Module):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Export a segmentation checkpoint to a deployable artifact and test it on random samples."
+        description="Export a segmentation checkpoint to TorchScript or a deployable .pth checkpoint and test it on random samples."
     )
     parser.add_argument(
         "--checkpoint",
@@ -57,8 +57,11 @@ def parse_args():
         "--export_format",
         type=str,
         default="auto",
-        choices=["auto", "torchscript", "bundle", "pickle"],
-        help="Deployment artifact format. 'auto' uses TorchScript when possible and falls back to bundle.",
+        choices=["auto", "torchscript", "checkpoint", "bundle", "pickle"],
+        help=(
+            "Deployment artifact format. 'auto' uses TorchScript when possible and falls back to a .pth checkpoint. "
+            "'bundle' and 'pickle' are kept as compatibility aliases and now also save a .pth checkpoint."
+        ),
     )
     parser.add_argument("--num_samples", type=int, default=3, help="Number of random samples for preview")
     parser.add_argument("--seed", type=int, default=41, help="Random seed for sample selection")
@@ -228,47 +231,53 @@ def export_torchscript_model(model: nn.Module, dummy_input: torch.Tensor, output
         traced_model.save(str(output_path))
 
 
-def export_bundle_model(output_path: Path, config_dict, state_dict, checkpoint_path: Path):
-    bundle = {
-        "format": "deploy_bundle",
-        "config": config_dict,
-        "state_dict": state_dict,
-        "source_checkpoint": str(checkpoint_path),
-    }
-    torch.save(bundle, output_path)
+def export_checkpoint_model(output_path: Path, checkpoint, config_dict, state_dict, checkpoint_path: Path):
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        deploy_checkpoint = dict(checkpoint)
+    else:
+        deploy_checkpoint = {"state_dict": state_dict}
+
+    deploy_checkpoint["format"] = "deploy_checkpoint"
+    deploy_checkpoint["config"] = config_dict
+    deploy_checkpoint["source_checkpoint"] = str(checkpoint_path)
+    torch.save(deploy_checkpoint, output_path)
 
 
-def export_pickled_model(output_path: Path, model: nn.Module):
-    torch.save(model, output_path)
-
-
-def load_bundle_model(bundle_path: Path, device: torch.device):
-    bundle = torch.load(bundle_path, map_location=device, weights_only=False)
-    config = SimpleNamespace(**bundle["config"])
+def load_checkpoint_model(model_path: Path, device: torch.device):
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    config = SimpleNamespace(**checkpoint["config"])
     model = build_model(
         config,
         input_channel=int(config.input_channel),
         num_classes=int(config.num_classes),
     ).to(device)
-    model.load_state_dict(bundle["state_dict"], strict=False)
+    state_dict = checkpoint["state_dict"] if "state_dict" in checkpoint else checkpoint
+    model.load_state_dict(state_dict, strict=False)
     model.eval()
-    return SegmentationInferenceWrapper(model).to(device).eval(), bundle
+    return SegmentationInferenceWrapper(model).to(device).eval()
 
 
-def load_pickled_model(model_path: Path, device: torch.device):
-    model = torch.load(model_path, map_location=device, weights_only=False)
-    if isinstance(model, nn.Module):
-        model = model.to(device).eval()
-    else:
-        raise TypeError(f"Pickled artifact did not contain an nn.Module: {type(model)}")
-    return model
+def normalize_export_format(export_format: str):
+    notes = []
+    normalized_format = export_format
 
-
-def should_prefer_bundle(export_format: str, model_name: str):
     if export_format == "bundle":
+        normalized_format = "checkpoint"
+        notes.append(
+            "Compatibility mode: '--export_format bundle' now saves a standard deploy checkpoint '.pth'."
+        )
+    elif export_format == "pickle":
+        normalized_format = "checkpoint"
+        notes.append(
+            "Compatibility mode: '--export_format pickle' no longer saves a pickled nn.Module and now saves a standard deploy checkpoint '.pth'."
+        )
+
+    return normalized_format, notes
+
+
+def should_prefer_checkpoint(export_format: str, model_name: str):
+    if export_format == "checkpoint":
         return True
-    if export_format == "pickle":
-        return False
     if export_format == "torchscript":
         return False
     return "RWKV" in model_name
@@ -304,30 +313,22 @@ def main():
         device=device,
     )
 
-    export_format = args.export_format
-    export_notes = []
+    export_format, export_notes = normalize_export_format(args.export_format)
 
-    if export_format == "pickle":
-        deploy_model_path = output_dir / "model_deploy_pickle.pth"
-        export_pickled_model(deploy_model_path, wrapper)
-        converted_model = load_pickled_model(deploy_model_path, device)
-        actual_export_format = "pickle"
-        export_notes.append(
-            "Pickle export avoids an explicit build_model() call at inference time, but it still requires the same repo modules and custom ops to be importable."
-        )
-    elif should_prefer_bundle(export_format, config.model):
-        deploy_model_path = output_dir / "model_deploy_bundle.pth"
-        export_bundle_model(
+    if should_prefer_checkpoint(export_format, config.model):
+        deploy_model_path = output_dir / "model_deploy.pth"
+        export_checkpoint_model(
             output_path=deploy_model_path,
+            checkpoint=checkpoint,
             config_dict=config_dict,
             state_dict=state_dict,
             checkpoint_path=checkpoint_path,
         )
-        converted_model, bundle_info = load_bundle_model(deploy_model_path, device)
-        actual_export_format = "bundle"
+        converted_model = load_checkpoint_model(deploy_model_path, device)
+        actual_export_format = "checkpoint"
         if export_format == "auto" and "RWKV" in config.model:
             export_notes.append(
-                "Auto mode selected deploy bundle because this model uses custom RWKV/WKV ops that do not export cleanly to TorchScript."
+                "Auto mode selected deploy checkpoint because this model uses custom RWKV/WKV ops that do not export cleanly to TorchScript."
             )
     else:
         deploy_model_path = output_dir / "model_deploy.ts"
@@ -339,20 +340,21 @@ def main():
             if export_format == "torchscript":
                 raise
             warnings.warn(
-                f"TorchScript export failed for model '{config.model}'. Falling back to deploy bundle. "
+                f"TorchScript export failed for model '{config.model}'. Falling back to a deploy checkpoint. "
                 f"Original error: {exc}",
                 RuntimeWarning,
             )
-            deploy_model_path = output_dir / "model_deploy_bundle.pth"
-            export_bundle_model(
+            deploy_model_path = output_dir / "model_deploy.pth"
+            export_checkpoint_model(
                 output_path=deploy_model_path,
+                checkpoint=checkpoint,
                 config_dict=config_dict,
                 state_dict=state_dict,
                 checkpoint_path=checkpoint_path,
             )
-            converted_model, bundle_info = load_bundle_model(deploy_model_path, device)
-            actual_export_format = "bundle"
-            export_notes.append(f"TorchScript export failed and auto mode fell back to bundle: {exc}")
+            converted_model = load_checkpoint_model(deploy_model_path, device)
+            actual_export_format = "checkpoint"
+            export_notes.append(f"TorchScript export failed and auto mode fell back to checkpoint: {exc}")
 
     sample_pairs = choose_random_pairs(data_dir, args.num_samples, args.seed)
 
