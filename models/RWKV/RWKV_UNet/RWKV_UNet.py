@@ -585,5 +585,5 @@ class RWKV_UNet_T(nn.Module):
         out = self.final_conv(dec0)
         return out
 
-def rwkv_unet(input_channel=3,num_classes=1):
-    return RWKV_UNet(input_channel=input_channel,num_classes=num_classes)
+def rwkv_unet(input_channel=3, num_classes=1, img_size=256, **kwargs):
+    return RWKV_UNet(input_channel=input_channel, num_classes=num_classes, img_size=img_size, **kwargs)

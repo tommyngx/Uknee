@@ -2,6 +2,7 @@ import os
 import argparse
 import shutil
 import time
+import traceback
 
 cpu_num = 1
 os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
@@ -110,6 +111,15 @@ def parse_arguments():
 
 
 args = parse_arguments()
+
+
+def _validate_runtime_config(args):
+    if args.model == "RWKV_UNet" and int(args.img_size) > 256:
+        raise ValueError(
+            "RWKV_UNet in this repo only supports img_size <= 256. "
+            f"Received img_size={args.img_size}. The custom WKV CUDA kernel is compiled with T_MAX=1024, "
+            "so 512x512 inputs overflow the stage attention token limit."
+        )
 
 
 
@@ -776,6 +786,7 @@ if __name__ == "__main__":
 
     
     print(f"\n=== Testing model: {args.model} ===")
+    _validate_runtime_config(args)
 
     exp_save_dir, log_dir, history_writer, logger, model = init_dir(args)
     row_data=vars(args)
@@ -832,6 +843,8 @@ if __name__ == "__main__":
             if not file_exists:
                 writer.writeheader()
             writer.writerow(error_row)
+        logger.exception("Training failed with an exception.")
+        traceback.print_exc()
         print(f"Model {args.model} failed: {str(e)}")
         raise SystemExit(1)
     

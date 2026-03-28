@@ -216,6 +216,14 @@ def build_model(config, **kwargs):
     config.model_id = model_id
     print(f"Using model_id {model_id} for model {model_name}")
 
+    if (
+        model_name == "RWKV_UNet"
+        and hasattr(config, "img_size")
+        and "img_size" not in kwargs
+    ):
+        kwargs = dict(kwargs)
+        kwargs["img_size"] = int(config.img_size)
+
     model_factory = _load_model_factory(model_name)
     print(f"kwargs: {kwargs}")
     return _instantiate_model(model_factory, kwargs)
