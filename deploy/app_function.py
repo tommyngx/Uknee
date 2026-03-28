@@ -10,6 +10,13 @@ from PIL import Image
 
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]
 
+try:
+    from dataloader.augment import IMAGENET_MEAN as TRAIN_RGB_MEAN
+    from dataloader.augment import IMAGENET_STD as TRAIN_RGB_STD
+except Exception:
+    TRAIN_RGB_MEAN = (0.485, 0.456, 0.406)
+    TRAIN_RGB_STD = (0.229, 0.224, 0.225)
+
 
 def _resolve_device(device: str):
     if device == "auto":
@@ -41,6 +48,89 @@ def _to_pil_image(image_input):
     raise TypeError(f"Unsupported image input type: {type(image_input)}")
 
 
+def _parse_channel_stats(value, channels: int, field_name: str):
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        value = value.strip().strip("\"'")
+        if not value:
+            return None
+        value = [item.strip() for item in value.split(",") if item.strip()]
+
+    if np.isscalar(value):
+        values = [float(value)]
+    else:
+        values = [float(item) for item in value]
+
+    if len(values) == 1 and channels > 1:
+        values = values * channels
+
+    if len(values) != channels:
+        raise ValueError(
+            f"{field_name} must contain {channels} value(s) for input_channel={channels}, got {values}"
+        )
+
+    return np.asarray(values, dtype=np.float32).reshape(1, 1, channels)
+
+
+def _should_use_imagenet_normalization(config) -> bool:
+    normalization_mode = str(getattr(config, "input_normalization", "")).strip().lower()
+    if normalization_mode in {"imagenet", "imagenet_mean_std", "mean_std"}:
+        return True
+    if normalization_mode in {"none", "scale_0_1", "zero_one", "/255"}:
+        return False
+
+    dataset_name = str(getattr(config, "dataset_name", "")).lower()
+    base_dir = str(getattr(config, "base_dir", "")).lower()
+    return "kvasir" in dataset_name or "kvasir" in base_dir
+
+
+def _resolve_preprocess_config(config):
+    channels = int(getattr(config, "input_channel", 3))
+    normalize_mean = _parse_channel_stats(
+        getattr(config, "normalize_mean", None),
+        channels=channels,
+        field_name="normalize_mean",
+    )
+    normalize_std = _parse_channel_stats(
+        getattr(config, "normalize_std", None),
+        channels=channels,
+        field_name="normalize_std",
+    )
+
+    if (normalize_mean is None) != (normalize_std is None):
+        raise ValueError("normalize_mean and normalize_std must be provided together.")
+
+    if normalize_mean is not None:
+        return {
+            "mean": normalize_mean,
+            "std": normalize_std,
+            "source": "checkpoint_config",
+        }
+
+    if channels == 3 and _should_use_imagenet_normalization(config):
+        return {
+            "mean": np.asarray(TRAIN_RGB_MEAN, dtype=np.float32).reshape(1, 1, 3),
+            "std": np.asarray(TRAIN_RGB_STD, dtype=np.float32).reshape(1, 1, 3),
+            "source": "imagenet_defaults",
+        }
+
+    return {
+        "mean": None,
+        "std": None,
+        "source": "scale_0_1",
+    }
+
+
+def _normalize_image_array(image_array: np.ndarray, preprocess):
+    mean = preprocess["mean"]
+    std = preprocess["std"]
+    if mean is None or std is None:
+        return image_array
+    return (image_array - mean) / std
+
+
 def load_model(weight_path, repo_root=None, device="auto", threshold=0.5):
     if repo_root is None:
         repo_root = DEFAULT_REPO_ROOT
@@ -61,6 +151,7 @@ def load_model(weight_path, repo_root=None, device="auto", threshold=0.5):
     cfg = SimpleNamespace(**cfg_dict)
     if "RWKV" in str(cfg.model) and device.type != "cuda":
         raise RuntimeError("RWKV models in this repo require CUDA/GPU for inference.")
+    preprocess = _resolve_preprocess_config(cfg)
 
     model = build_model(
         cfg,
@@ -78,6 +169,7 @@ def load_model(weight_path, repo_root=None, device="auto", threshold=0.5):
         "device": device,
         "threshold": float(threshold),
         "weight_path": str(weight_path),
+        "preprocess": preprocess,
     }
 
 
@@ -85,6 +177,7 @@ def predict_mask(runtime, image_input, threshold=None, return_pil=True, resize_b
     model = runtime["model"]
     cfg = runtime["config"]
     device = runtime["device"]
+    preprocess = runtime["preprocess"]
     threshold = runtime["threshold"] if threshold is None else float(threshold)
 
     image = _to_pil_image(image_input)
@@ -96,6 +189,8 @@ def predict_mask(runtime, image_input, threshold=None, return_pil=True, resize_b
     else:
         resized = image.convert("RGB").resize((int(cfg.img_size), int(cfg.img_size)), Image.BILINEAR)
         image_array = np.array(resized, dtype=np.float32) / 255.0
+
+    image_array = _normalize_image_array(image_array, preprocess)
 
     input_tensor = torch.from_numpy(image_array.transpose(2, 0, 1)).unsqueeze(0).to(device)
 
