@@ -14,9 +14,14 @@ from einops import rearrange, repeat
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
 DropPath.__repr__ = lambda self: f"timm.DropPath({self.drop_prob})"
-from monai.networks.blocks.dynunet_block import UnetOutBlock
-from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
 from torch.hub import load_state_dict_from_url
+
+try:
+    from monai.networks.blocks.dynunet_block import UnetOutBlock
+    from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
+except ModuleNotFoundError:
+    from .dynunet_block import UnetOutBlock
+    from .unetr_block import UnetrBasicBlock, UnetrUpBlock
 
 
 class PatchEmbed2D(nn.Module):
@@ -644,4 +649,3 @@ def swin_umamba(num_classes, input_channel=3):
     model = SwinUMamba(input_channel=input_channel, num_classes=num_classes)
     model = load_pretrained_ckpt(model)
     return model 
-
