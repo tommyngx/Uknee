@@ -140,8 +140,17 @@ def deep_supervision_loss(outputs, label_batch, loss_metric,weights=None):
     total_loss = 0.0
 
     for i, output in enumerate(outputs):
-        if output.shape[1:] != label_batch.shape[1:]:
-            output = F.interpolate(output, size=label_batch.shape[1:], mode='bilinear', align_corners=True)
+        spatial_dims = output.dim() - 2
+        target_spatial_size = label_batch.shape[-spatial_dims:]
+        if output.shape[-spatial_dims:] != target_spatial_size:
+            interpolate_mode = {1: "linear", 2: "bilinear", 3: "trilinear"}.get(spatial_dims, "nearest")
+            align_corners = True if interpolate_mode in {"linear", "bilinear", "trilinear"} else None
+            output = F.interpolate(
+                output,
+                size=target_spatial_size,
+                mode=interpolate_mode,
+                align_corners=align_corners,
+            )
         loss = loss_metric(output, label_batch)
         total_loss += loss
 
