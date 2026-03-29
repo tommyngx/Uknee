@@ -563,5 +563,40 @@
         "id": 115,
         "deeps_supervision": 1,
         "filename": "RWKV_UNetV2.py"
+    },
+    {
+        "modelname": "RWKV_UNetV2_Ablation",
+        "id": 116,
+        "deeps_supervision": 1,
+        "filename": "RWKV_UNetV2_ablation.py"
+    },
+    {
+        "modelname": "RWKV_UNetV2_NoDS",
+        "id": 117,
+        "filename": "RWKV_UNetV2_ablation.py"
+    },
+    {
+        "modelname": "RWKV_UNetV2_NoBoundary",
+        "id": 118,
+        "deeps_supervision": 1,
+        "filename": "RWKV_UNetV2_ablation.py"
+    },
+    {
+        "modelname": "RWKV_UNetV2_NoGatedSkip",
+        "id": 119,
+        "deeps_supervision": 1,
+        "filename": "RWKV_UNetV2_ablation.py"
+    },
+    {
+        "modelname": "RWKV_UNetV2_NoDecoderRWKV",
+        "id": 120,
+        "deeps_supervision": 1,
+        "filename": "RWKV_UNetV2_ablation.py"
+    },
+    {
+        "modelname": "RWKV_UNetV2_NoCCM",
+        "id": 121,
+        "deeps_supervision": 1,
+        "filename": "RWKV_UNetV2_ablation.py"
     }
 ]
