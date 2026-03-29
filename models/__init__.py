@@ -129,6 +129,7 @@ MODEL_REGISTRY = {
     "MedVKAN": (".Mamba.MedVKAN.MedVKAN", "medvkan"),
     "Zig_RiR": (".RWKV.Zig_RiR.Zig_RiR", "zig_rir"),
     "RWKV_UNet": (".RWKV.RWKV_UNet.RWKV_UNet", "rwkv_unet"),
+    "RWKV_UNetV2": (".RWKV.RWKV_UNet.RWKV_UNetV2", "rwkv_unetv2"),
     "U_RWKV": (".RWKV.U_RWKV.U_RWKV", "u_rwkv"),
 }
 
@@ -217,12 +218,16 @@ def build_model(config, **kwargs):
     print(f"Using model_id {model_id} for model {model_name}")
 
     if (
-        model_name == "RWKV_UNet"
+        model_name in {"RWKV_UNet", "RWKV_UNetV2"}
         and hasattr(config, "img_size")
         and "img_size" not in kwargs
     ):
         kwargs = dict(kwargs)
         kwargs["img_size"] = int(config.img_size)
+
+    if model_name == "RWKV_UNetV2":
+        kwargs = dict(kwargs)
+        kwargs["deep_supervision"] = bool(getattr(config, "do_deeps", False))
 
     model_factory = _load_model_factory(model_name)
     print(f"kwargs: {kwargs}")

@@ -126,6 +126,11 @@ def _validate_runtime_config(args):
             f"Received img_size={args.img_size}. The custom WKV CUDA kernel is compiled with T_MAX=1024, "
             "so 512x512 inputs overflow the stage attention token limit."
         )
+    if args.model == "RWKV_UNetV2" and int(args.img_size) > 1024:
+        raise ValueError(
+            "RWKV_UNetV2 uses strip-wise RWKV mixing and supports img_size <= 1024. "
+            f"Received img_size={args.img_size}. The custom WKV CUDA kernel is compiled with T_MAX=1024."
+        )
 
 
 
