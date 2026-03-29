@@ -1,6 +1,8 @@
 
 import re
+import sys
 import time
+import types
 import math
 import numpy as np
 from functools import partial
@@ -623,8 +625,40 @@ def load_pretrained_ckpt(model):
     skip_params = ["norm.weight", "norm.bias", "head.weight", "head.bias", 
                    "patch_embed.proj.weight", "patch_embed.proj.bias", 
                    "patch_embed.norm.weight", "patch_embed.norm.weight"]    
-    
-    ckpt = load_state_dict_from_url(pretrained_path, progress=True)
+
+    def _ensure_yacs_stub():
+        if "yacs.config" in sys.modules:
+            return
+        yacs_module = types.ModuleType("yacs")
+        config_module = types.ModuleType("yacs.config")
+
+        class CfgNode(dict):
+            pass
+
+        config_module.CfgNode = CfgNode
+        yacs_module.config = config_module
+        sys.modules["yacs"] = yacs_module
+        sys.modules["yacs.config"] = config_module
+
+    def _load_checkpoint():
+        load_kwargs = {"progress": True, "map_location": "cpu"}
+        try:
+            return load_state_dict_from_url(pretrained_path, weights_only=True, **load_kwargs)
+        except TypeError:
+            pass
+        except Exception as exc:
+            print(f"weights_only checkpoint load failed, fallback to regular load: {exc}")
+
+        try:
+            return load_state_dict_from_url(pretrained_path, **load_kwargs)
+        except ModuleNotFoundError as exc:
+            if exc.name != "yacs":
+                raise
+            print("Checkpoint references yacs; using a local CfgNode stub for loading.")
+            _ensure_yacs_stub()
+            return load_state_dict_from_url(pretrained_path, **load_kwargs)
+
+    ckpt = _load_checkpoint()
     model_dict = model.state_dict()
     for k, v in ckpt['model'].items():
         if k in skip_params:
