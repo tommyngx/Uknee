@@ -65,6 +65,12 @@ def convert_to_numpy(data):
         return [convert_to_numpy(item) for item in data]
     else:
         return data
+
+
+def ensure_parent_dir(file_path):
+    parent_dir = os.path.dirname(file_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
 def seed_torch(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)  # GPU随机种子确定
@@ -457,6 +463,7 @@ if __name__ == "__main__":
     row_data=vars(args)
     if args.just_for_test:
         csv_file = f"./result/result_{args.dataset_name}_test.csv"
+        ensure_parent_dir(csv_file)
         file_exists = os.path.isfile(csv_file)
         val_metric={}
         trainloader, valloader = getDataloader(args)
@@ -475,6 +482,7 @@ if __name__ == "__main__":
         exit()
     #try:
     csv_file = f"./result/result_{args.dataset_name}_train.csv"
+    ensure_parent_dir(csv_file)
     file_exists = os.path.isfile(csv_file)
     best_metric,final_metric = trainer_multi3d(args,exp_save_dir, log_dir, history_writer, logger, model)        
     print("Best performance: ", best_metric)

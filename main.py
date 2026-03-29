@@ -60,6 +60,12 @@ def convert_to_numpy(data):
     else:
         return data
 
+
+def ensure_parent_dir(file_path):
+    parent_dir = os.path.dirname(file_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+
 def seed_torch(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -797,7 +803,8 @@ if __name__ == "__main__":
             csv_file = f"./result/result_{args.dataset_name}_2_{args.zero_shot_dataset_name}_test.csv"
         else:
             csv_file = f"./result/result_{args.dataset_name}_test.csv"
-        
+
+        ensure_parent_dir(csv_file)
         file_exists = os.path.isfile(csv_file)
         model, model_path = load_model(args, model_best_or_final="best")
         print(f"Just for test, skipping training. loading model form best checkpoint. Model loaded from {model_path}")
@@ -819,6 +826,7 @@ if __name__ == "__main__":
         exit()
     try:
         csv_file = f"./result/result_{args.dataset_name}_train.csv"
+        ensure_parent_dir(csv_file)
         file_exists = os.path.isfile(csv_file)
         train_metric_dict = train(args,exp_save_dir, log_dir, history_writer, logger, model)
         if args.zero_shot_dataset_name !="":
@@ -838,9 +846,11 @@ if __name__ == "__main__":
     except Exception as e:
         row_data.update({"Error": str(e)})
         error_row = row_data.copy()
-        with open('./ERROR.log', 'a', newline='') as f:
+        error_log_file = "./ERROR.log"
+        error_log_exists = os.path.isfile(error_log_file)
+        with open(error_log_file, 'a', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=error_row.keys())
-            if not file_exists:
+            if not error_log_exists:
                 writer.writeheader()
             writer.writerow(error_row)
         logger.exception("Training failed with an exception.")
