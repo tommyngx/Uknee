@@ -28,6 +28,7 @@ import json
 import logging
 import numpy as np
 import torch
+import torch.nn as nn
 
 torch.set_num_threads(cpu_num)
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -127,6 +128,54 @@ def parse_arguments():
 
 
 args = parse_arguments()
+
+
+def _requested_gpu_count(gpu_arg):
+    return len([gpu_id.strip() for gpu_id in str(gpu_arg).split(',') if gpu_id.strip()])
+
+
+def _unwrap_model(model):
+    return model.module if isinstance(model, nn.DataParallel) else model
+
+
+def _wrap_data_parallel_if_needed(model, args, logger=None):
+    if not torch.cuda.is_available():
+        return model
+
+    visible_gpu_count = torch.cuda.device_count()
+    requested_gpu_count = _requested_gpu_count(args.gpu)
+    if visible_gpu_count <= 1 or requested_gpu_count <= 1:
+        return model
+
+    device_ids = list(range(visible_gpu_count))
+    if logger is not None:
+        logger.info(
+            "Using DataParallel on visible CUDA devices %s from --gpu=%s.",
+            device_ids,
+            args.gpu,
+        )
+    else:
+        print(f"Using DataParallel on visible CUDA devices {device_ids} from --gpu={args.gpu}")
+    return nn.DataParallel(model, device_ids=device_ids)
+
+
+def _load_model_state_dict(model, state_dict):
+    target = _unwrap_model(model)
+    try:
+        target.load_state_dict(state_dict)
+        return
+    except RuntimeError:
+        pass
+
+    if any(key.startswith("module.") for key in state_dict):
+        stripped_state_dict = {
+            key.removeprefix("module."): value
+            for key, value in state_dict.items()
+        }
+        target.load_state_dict(stripped_state_dict)
+        return
+
+    model.load_state_dict(state_dict)
 
 
 def _validate_runtime_config(args):
@@ -248,7 +297,7 @@ def _build_optimizer(args, model, logger):
 def _save_checkpoint(path, args, model, optimizer, epoch, best_iou, metrics=None):
     checkpoint = {
         'epoch': epoch,
-        'state_dict': model.state_dict(),
+        'state_dict': _unwrap_model(model).state_dict(),
         'optimizer': optimizer.state_dict() if optimizer is not None else None,
         'best_iou': best_iou,
         'metrics': convert_to_numpy(metrics or {}),
@@ -369,9 +418,10 @@ def load_model(args, model_best_or_final="best"):
     else:
         state_dict = checkpoint
 
-    model.load_state_dict(state_dict)
+    _load_model_state_dict(model, state_dict)
 
     model.to(device)
+    model = _wrap_data_parallel_if_needed(model, args)
 
     return model, model_path
 
@@ -461,6 +511,7 @@ def init_dir(args):
     )
     history_writer = EpochLogWriter(log_dir)
     model = build_model(config=args,input_channel=args.input_channel, num_classes=args.num_classes).to(device)
+    model = _wrap_data_parallel_if_needed(model, args, logger)
 
     return exp_save_dir, log_dir, history_writer, logger, model
 
@@ -553,7 +604,7 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
         checkpoint_path = next((path for path in candidate_paths if os.path.exists(path)), None)
         if checkpoint_path is not None:
             checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-            model.load_state_dict(checkpoint['state_dict'])
+            _load_model_state_dict(model, checkpoint['state_dict'])
             if checkpoint.get('optimizer') is not None:
                 optimizer.load_state_dict(checkpoint['optimizer'])
             start_epoch = int(checkpoint['epoch'])
