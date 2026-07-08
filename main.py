@@ -112,6 +112,16 @@ def parse_arguments():
     parser.add_argument('--just_for_test', type=bool, default=0, help='just for test')
     parser.add_argument('--just_for_zero_shot', type=bool, default=0, help='just for test')
     args = parser.parse_args()
+    try:
+        from dataloader.dataset_mesko import infer_mesko_num_classes, is_mesko_dataset
+
+        if is_mesko_dataset(args.base_dir, args.dataset_name) and int(args.num_classes) <= 1:
+            inferred_num_classes = infer_mesko_num_classes(args.base_dir)
+            if inferred_num_classes and inferred_num_classes > 1:
+                args.num_classes = inferred_num_classes
+                print(f"Auto-set num_classes to {args.num_classes} for MESKO multiclass dataset")
+    except Exception as exc:
+        print(f"Could not auto-configure MESKO num_classes: {exc}")
     seed_torch(args.seed)
     return args
 
@@ -155,6 +165,12 @@ def deep_supervision_loss(outputs, label_batch, loss_metric,weights=None):
         total_loss += loss
 
     return total_loss/ num
+
+
+def _build_criterion(args):
+    if int(args.num_classes) > 1:
+        return losses.__dict__['DiceCELoss'](n_classes=args.num_classes).to(device), "DiceCELoss"
+    return losses.__dict__['BCEDiceLoss']().to(device), "BCEDiceLoss"
 
 
 def _as_float(value):
@@ -365,7 +381,7 @@ def zero_shot(args,logger,model=None):
         model,model_path = load_model(args)
 
     logger.info("train file dir:{} val file dir:{}".format(args.train_file_dir, args.val_file_dir))
-    criterion = losses.__dict__['BCEDiceLoss']().to(device)
+    criterion, _ = _build_criterion(args)
 
     avg_meters = {'loss': AverageMeter(),
                   'iou': AverageMeter(),
@@ -451,7 +467,7 @@ def init_dir(args):
 
 def validate(args,logger,model):
     trainloader,valloader = getDataloader(args)
-    criterion = losses.__dict__['BCEDiceLoss']().to(device)
+    criterion, _ = _build_criterion(args)
     avg_meters = {'loss': AverageMeter(),
                 'iou': AverageMeter(),
                 'val_loss': AverageMeter(),
@@ -501,8 +517,9 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
     logger.info(f"{len(trainloader)} train iterations per epoch | {len(valloader)} validation iterations per epoch")
     
     optimizer, base_lr, optimizer_name = _build_optimizer(args, model, logger)
-    criterion = losses.__dict__['BCEDiceLoss']().to(device)
+    criterion, criterion_name = _build_criterion(args)
     logger.info(f"optimizer:{optimizer_name} base_lr:{base_lr}")
+    logger.info(f"criterion:{criterion_name}")
 
 
     train_metric_dict = {

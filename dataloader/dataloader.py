@@ -1,14 +1,15 @@
+import os
+
+os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+
 from dataloader.dataset import MedicalDataSets,Covid19CTScanDataset,KvasirSEGDataset,DataScienceBowl2018Dataset,PH2Dataset,MedicalDataSetsVal,MonuSeg2018Dataset
 from dataloader.dataset import KvasirSEGDatasetVAL,DRIVEdataset,CHASEDB1Dataset, BUSBRADatasets,GlasDataSets
 from albumentations.core.composition import Compose
 from torch.utils.data import DataLoader
-from dataloader.dataset_synapse import Synapse_dataset,RandomGenerator_synapse
-from dataloader.dataset_ACDC import ACDCdataset,RandomGenerator_ACDC    
-from dataloader.dataset_XRay import MontgomeryXRAYDataSet,MIHXRAYDataSet
+from dataloader.dataset_mesko import Mesko5SegDataset, is_mesko_dataset
 from dataloader.download import get_MedSegBench_dataset 
 from dataloader.download import INFO as MedSegBench_dataset_name_dict
 from dataloader.augment import build_train_transform, build_val_transform, resolve_aug_strategy
-import os
 
 
 CUSTOM_BINARY_DATASET_NAMES = {"custom", "custom_binary", "binary", "mydata", "mydataset"}
@@ -63,6 +64,19 @@ def getDataloader(args):
         db_train = CHASEDB1Dataset(base_dir=args.base_dir, mode="train", transform=train_transform)
         db_val = CHASEDB1Dataset(base_dir=args.base_dir, mode="val", transform=val_transform)
         db_test = CHASEDB1Dataset(base_dir=args.base_dir, mode="test", transform=val_transform)
+    elif is_mesko_dataset(args.base_dir, args.dataset_name):
+        db_train = Mesko5SegDataset(
+            base_dir=args.base_dir,
+            mode="train",
+            transform=train_transform,
+            num_classes=args.num_classes,
+        )
+        db_val = Mesko5SegDataset(
+            base_dir=args.base_dir,
+            mode="val",
+            transform=val_transform,
+            num_classes=args.num_classes,
+        )
     elif args.dataset_name in ["bus","busi","isic18","tuscui"] or (
         args.dataset_name.lower() in CUSTOM_BINARY_DATASET_NAMES or is_generic_binary_dataset(args.base_dir)
     ): # generic binary dataset layout: images/, masks/0/, train.txt, val.txt
@@ -71,6 +85,8 @@ def getDataloader(args):
         db_val = MedicalDataSets(base_dir=args.base_dir, mode="val", transform=val_transform,
                                 train_file_dir=args.train_file_dir, val_file_dir=args.val_file_dir)
     elif 'synapse' in args.base_dir:
+        from dataloader.dataset_synapse import Synapse_dataset, RandomGenerator_synapse
+
         uses_aug_policy = False
         assert args.num_classes == 9
         db_train = Synapse_dataset(base_dir=args.base_dir, split="train", nclass=args.num_classes,
@@ -78,6 +94,8 @@ def getDataloader(args):
                                    [RandomGenerator_synapse(output_size=[args.img_size, args.img_size])]))
         db_val = Synapse_dataset(base_dir=args.base_dir, split="test_vol", nclass=args.num_classes)
     elif "ACDC" in args.base_dir:
+        from dataloader.dataset_ACDC import ACDCdataset, RandomGenerator_ACDC
+
         uses_aug_policy = False
         import torchvision
         # donot use val ；use test
@@ -115,6 +133,8 @@ def getDataloader(args):
         db_val = GlasDataSets(base_dir=args.base_dir, mode="val", transform=val_transform,
                                 train_file_dir=args.train_file_dir, val_file_dir=args.val_file_dir)
     elif 'Montgomery' in args.base_dir:
+        from dataloader.dataset_XRay import MontgomeryXRAYDataSet
+
         db_train = MontgomeryXRAYDataSet(base_dir=args.base_dir, mode="train", transform=train_transform,
                                 train_file_dir=args.train_file_dir, val_file_dir=args.val_file_dir)
         db_val = MontgomeryXRAYDataSet(base_dir=args.base_dir, mode="val", transform=val_transform,
@@ -155,6 +175,13 @@ def getZeroShotDataloader(args):
         db_val = PH2Dataset(args.zero_shot_base_dir, mode='test', transform=val_transform)
     elif "CHASEDB1" in args.zero_shot_base_dir:
         db_val = CHASEDB1Dataset(base_dir=args.zero_shot_base_dir, mode="test", transform=val_transform)
+    elif is_mesko_dataset(args.zero_shot_base_dir, args.zero_shot_dataset_name):
+        db_val = Mesko5SegDataset(
+            base_dir=args.zero_shot_base_dir,
+            mode="test",
+            transform=val_transform,
+            num_classes=args.num_classes,
+        )
     elif 'Kvasir' in args.zero_shot_base_dir :
         dataset = KvasirSEGDatasetVAL(base_dir=args.zero_shot_base_dir,val_file_dir=args.val_file_dir,img_size=img_size)
         dataset.setup()
@@ -172,6 +199,8 @@ def getZeroShotDataloader(args):
     elif 'DRIVE' in args.zero_shot_base_dir:
         db_val = DRIVEdataset(base_dir=args.zero_shot_base_dir, mode="val", transform=val_transform)
     elif 'NIH' in args.zero_shot_base_dir:
+        from dataloader.dataset_XRay import MIHXRAYDataSet
+
         db_val = MIHXRAYDataSet(base_dir=args.zero_shot_base_dir, mode="val", transform=val_transform)
     elif args.zero_shot_dataset_name in MedSegBench_dataset_name_dict.keys():
         db_val = get_MedSegBench_dataset(flag=args.zero_shot_dataset_name, split="test", transform=val_transform,size=img_size)

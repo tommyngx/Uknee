@@ -92,6 +92,10 @@ class DiceCELoss(nn.Module):
             ce_loss = F.binary_cross_entropy_with_logits(inputs, target.float())
             dice_loss = self.dice(inputs, target, sigmoid=True)
         else:
+            if target.ndim == inputs.ndim and target.size(1) == 1:
+                target = target[:, 0]
+            elif target.ndim == inputs.ndim and target.size(1) == inputs.shape[1]:
+                target = torch.argmax(target, dim=1)
             ce_loss = self.ce(inputs, target.long())
             dice_loss = self.dice(inputs, target, softmax=True)
         return self.lambda_ce * ce_loss + self.lambda_dice * dice_loss
