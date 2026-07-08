@@ -598,5 +598,10 @@
         "id": 121,
         "deeps_supervision": 1,
         "filename": "RWKV_UNetV2_ablation.py"
+    },
+    {
+        "modelname": "RWKV_UNetV3",
+        "id": 122,
+        "filename": "RWKV_UNetV3.py"
     }
 ]

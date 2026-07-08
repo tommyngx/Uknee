@@ -130,6 +130,7 @@ MODEL_REGISTRY = {
     "Zig_RiR": (".RWKV.Zig_RiR.Zig_RiR", "zig_rir"),
     "RWKV_UNet": (".RWKV.RWKV_UNet.RWKV_UNet", "rwkv_unet"),
     "RWKV_UNetV2": (".RWKV.RWKV_UNet.RWKV_UNetV2", "rwkv_unetv2"),
+    "RWKV_UNetV3": (".RWKV.RWKV_UNet.RWKV_UNetV3", "rwkv_unetv3"),
     "RWKV_UNetV2_Ablation": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_ablation"),
     "RWKV_UNetV2_NoDS": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_nods"),
     "RWKV_UNetV2_NoBoundary": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_noboundary"),
@@ -224,7 +225,11 @@ def build_model(config, **kwargs):
     print(f"Using model_id {model_id} for model {model_name}")
 
     if (
-        (model_name == "RWKV_UNet" or model_name.startswith("RWKV_UNetV2"))
+        (
+            model_name == "RWKV_UNet"
+            or model_name.startswith("RWKV_UNetV2")
+            or model_name == "RWKV_UNetV3"
+        )
         and hasattr(config, "img_size")
         and "img_size" not in kwargs
     ):
