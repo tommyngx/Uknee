@@ -131,6 +131,7 @@ MODEL_REGISTRY = {
     "RWKV_UNet": (".RWKV.RWKV_UNet.RWKV_UNet", "rwkv_unet"),
     "RWKV_UNetV2": (".RWKV.RWKV_UNet.RWKV_UNetV2", "rwkv_unetv2"),
     "RWKV_UNetV3": (".RWKV.RWKV_UNet.RWKV_UNetV3", "rwkv_unetv3"),
+    "RWKV_UNetV4": (".RWKV.RWKV_UNet.RWKV_UNetV4", "rwkv_unetv4"),
     "RWKV_UNetV2_Ablation": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_ablation"),
     "RWKV_UNetV2_NoDS": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_nods"),
     "RWKV_UNetV2_NoBoundary": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_noboundary"),
@@ -229,6 +230,7 @@ def build_model(config, **kwargs):
             model_name == "RWKV_UNet"
             or model_name.startswith("RWKV_UNetV2")
             or model_name == "RWKV_UNetV3"
+            or model_name == "RWKV_UNetV4"
         )
         and hasattr(config, "img_size")
         and "img_size" not in kwargs
