@@ -104,6 +104,7 @@ def parse_arguments():
         help='2D augmentation strategy: auto, none, basic, standard, strong, xray',
     )
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
+    parser.add_argument('--pretrained_path', type=str, default="", help='Path to custom pretrained weights/checkpoint (.pth)')
     parser.add_argument('--exp_name', type=str, default="default_exp", help='Experiment name')
     parser.add_argument('--output_dir', type=str, default="", help='Base output directory. Run artifacts are saved under {output_dir}/{exp_name}/. Defaults to ./output/{exp_name}/')
     parser.add_argument('--zero_shot_base_dir', type=str, default="", help='zero_base_dir')
@@ -595,7 +596,21 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
     top_model_summary = []
     last_lr = base_lr
 
-    if args.resume:
+    if args.pretrained_path:
+        if os.path.exists(args.pretrained_path):
+            logger.info(f"Loading pretrained weights from {args.pretrained_path}")
+            checkpoint = torch.load(args.pretrained_path, map_location=device, weights_only=False)
+            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            elif isinstance(checkpoint, dict) and 'model' in checkpoint:
+                state_dict = checkpoint['model']
+            else:
+                state_dict = checkpoint
+            _load_model_state_dict(model, state_dict)
+            logger.info("Successfully loaded custom pretrained weights into model.")
+        else:
+            logger.warning(f"Pretrained weights file not found at: {args.pretrained_path}")
+    elif args.resume:
         candidate_paths = [
             os.path.join(exp_save_dir, 'checkpoint_last.pth'),
             os.path.join(exp_save_dir, 'checkpoint_final.pth'),
