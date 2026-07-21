@@ -160,23 +160,46 @@ def _wrap_data_parallel_if_needed(model, args, logger=None):
     return nn.DataParallel(model, device_ids=device_ids)
 
 
-def _load_model_state_dict(model, state_dict):
+def _load_model_state_dict(model, state_dict, logger=None):
     target = _unwrap_model(model)
+    model_state = target.state_dict()
+
+    if any(key.startswith("module.") for key in state_dict):
+        state_dict = {
+            key.removeprefix("module."): value
+            for key, value in state_dict.items()
+        }
+
     try:
-        target.load_state_dict(state_dict)
+        target.load_state_dict(state_dict, strict=True)
         return
     except RuntimeError:
         pass
 
-    if any(key.startswith("module.") for key in state_dict):
-        stripped_state_dict = {
-            key.removeprefix("module."): value
-            for key, value in state_dict.items()
-        }
-        target.load_state_dict(stripped_state_dict)
-        return
+    matched_state_dict = {}
+    mismatched_keys = []
 
-    model.load_state_dict(state_dict)
+    for k, v in state_dict.items():
+        if k in model_state:
+            if v.shape == model_state[k].shape:
+                matched_state_dict[k] = v
+            else:
+                mismatched_keys.append(f"{k} (checkpoint shape {tuple(v.shape)} vs model shape {tuple(model_state[k].shape)})")
+
+    target.load_state_dict(matched_state_dict, strict=False)
+
+    msg = (
+        f"Flexible checkpoint loading complete: loaded {len(matched_state_dict)}/{len(model_state)} parameters. "
+        f"Skipped {len(mismatched_keys)} mismatched layers."
+    )
+    if logger is not None:
+        logger.info(msg)
+        if mismatched_keys:
+            logger.info(f"Mismatched layers skipped: {mismatched_keys}")
+    else:
+        print(msg)
+        if mismatched_keys:
+            print(f"Mismatched layers skipped: {mismatched_keys}")
 
 
 def _validate_runtime_config(args):
@@ -606,7 +629,7 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
                 state_dict = checkpoint['model']
             else:
                 state_dict = checkpoint
-            _load_model_state_dict(model, state_dict)
+            _load_model_state_dict(model, state_dict, logger=logger)
             logger.info("Successfully loaded custom pretrained weights into model.")
         else:
             logger.warning(f"Pretrained weights file not found at: {args.pretrained_path}")
@@ -619,7 +642,7 @@ def train(args,exp_save_dir, log_dir, history_writer, logger, model):
         checkpoint_path = next((path for path in candidate_paths if os.path.exists(path)), None)
         if checkpoint_path is not None:
             checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-            _load_model_state_dict(model, checkpoint['state_dict'])
+            _load_model_state_dict(model, checkpoint['state_dict'], logger=logger)
             if checkpoint.get('optimizer') is not None:
                 optimizer.load_state_dict(checkpoint['optimizer'])
             start_epoch = int(checkpoint['epoch'])
