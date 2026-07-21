@@ -117,11 +117,11 @@ def parse_arguments():
     try:
         from dataloader.dataset_mesko import infer_mesko_num_classes, is_mesko_dataset
 
-        if is_mesko_dataset(args.base_dir, args.dataset_name) and int(args.num_classes) <= 1:
+        if is_mesko_dataset(args.base_dir, args.dataset_name):
             inferred_num_classes = infer_mesko_num_classes(args.base_dir)
-            if inferred_num_classes and inferred_num_classes > 1:
+            if inferred_num_classes and inferred_num_classes > 1 and int(args.num_classes) != inferred_num_classes:
+                print(f"Auto-updating num_classes from {args.num_classes} to {inferred_num_classes} based on MESKO dataset metadata")
                 args.num_classes = inferred_num_classes
-                print(f"Auto-set num_classes to {args.num_classes} for MESKO multiclass dataset")
     except Exception as exc:
         print(f"Could not auto-configure MESKO num_classes: {exc}")
     seed_torch(args.seed)

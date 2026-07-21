@@ -146,13 +146,14 @@ class Mesko5SegDataset(Dataset):
         if self.num_classes <= 1:
             raise ValueError(
                 "Mesko5SegDataset is multiclass. Set --num_classes to the number of classes "
-                "(7 for Ref/unet_mesko5seg)."
+                "matching your dataset metadata (e.g. 7, 11)."
             )
         if inferred_num_classes > 1 and self.num_classes < inferred_num_classes:
-            raise ValueError(
-                f"Mesko5SegDataset metadata declares {inferred_num_classes} classes, "
-                f"but num_classes={self.num_classes}."
+            print(
+                f"Auto-updating Mesko5SegDataset num_classes from {self.num_classes} to {inferred_num_classes} "
+                f"based on dataset metadata."
             )
+            self.num_classes = inferred_num_classes
 
         self.image_dir, self.mask_dir = _resolve_split_dirs(self.base_dir, self.mode)
         image_map = _index_files(self.image_dir)
