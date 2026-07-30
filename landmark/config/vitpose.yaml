@@ -1,0 +1,24 @@
+data:
+  yaml_path: Ref/yolo_mesko4GF2/data.yaml
+  image_height: 640
+  image_width: 640
+  num_workers: 4
+  val_fraction: 0.15
+  augment: true
+
+model:
+  name: vitpose
+  num_landmarks: 129
+  input_channels: 1
+  query_dim: 192
+  attention_heads: 6
+  vit_patch_size: 16
+  vit_depth: 6
+  checkpoint: ""
+
+training:
+  experiment_name: vitpose_baseline
+  output_dir: landmark/runs
+  epochs: 100
+  batch_size: 4
+  learning_rate: 0.0001

@@ -1,0 +1,21 @@
+data:
+  yaml_path: Ref/yolo_mesko4GF2/data.yaml
+  image_height: 640
+  image_width: 640
+  num_workers: 4
+  val_fraction: 0.15
+  augment: true
+
+model:
+  name: hrnet
+  num_landmarks: 129
+  input_channels: 1
+  hrnet_width: 32
+  checkpoint: ""
+
+training:
+  experiment_name: hrnet_baseline
+  output_dir: landmark/runs
+  epochs: 100
+  batch_size: 4
+  learning_rate: 0.0001
