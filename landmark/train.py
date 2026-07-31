@@ -35,7 +35,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=None, help="Override YAML epochs")
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
     parser.add_argument("--device", default=None, help="cuda, mps, cpu, or auto")
+    parser.add_argument("--checkpoint", default=None, help="Override segmentation backbone checkpoint")
+    parser.add_argument("--yaml-path", default=None, help="Override dataset data.yaml path")
+    parser.add_argument("--num-mask-classes", type=int, default=None, help="Override segmentation class count")
     return parser.parse_args()
+
 
 
 def _seed_everything(seed: int) -> None:
@@ -183,6 +187,13 @@ def main() -> None:
         config.training.device = args.device
     if args.resume:
         config.training.resume = args.resume
+    if args.checkpoint is not None:
+        config.model.checkpoint = args.checkpoint
+    if args.yaml_path is not None:
+        config.data.yaml_path = args.yaml_path
+    if args.num_mask_classes is not None:
+        config.model.num_mask_classes = args.num_mask_classes
+
     _seed_everything(config.training.seed)
     device = _device(config.training.device)
 
