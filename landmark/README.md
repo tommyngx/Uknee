@@ -27,7 +27,27 @@ losses and metrics.
 From the repository root:
 
 ```bash
-python -m landmark.train --config landmark/config/adaptive_rwkv.yaml
+python -m landmark.train \
+  --checkpoint /data/tommyngu/BMammo/Knee/Run_OApheno/Unet_mesko_640_RWKV3_9class2/checkpoint_last.pth \
+  --yaml-path /projects/BMammo/Knee/data/yolo_mesko4GF2/data.yaml \
+  --batch-size 8 \
+  --epochs 100 \
+  --device cuda \
+  --output-dir /projects/BMammo/Knee/Run_OApheno \
+  --exp-name Landmark_RWKV3_11class \
+  --seed 2006 \
+  --img-size 640 \
+  --aug-strategy xray
+```
+
+`--num-mask-classes` now defaults to `11`, so it is not needed in the command
+above. The CLI also accepts underscore aliases matching `main.py`, for example
+`--output_dir`, `--img_size`, `--aug_strategy`, `--base_lr`, and
+`--pretrained_path`.
+
+Baseline examples:
+
+```bash
 python -m landmark.train --config landmark/config/vitpose.yaml
 python -m landmark.train --config landmark/config/hrnet.yaml
 ```
@@ -66,13 +86,12 @@ python -m landmark.evaluate \
 
 ## Important configuration
 
-The supplied segmentation checkpoint was trained as `RWKV_UNetV3`, 640×640,
-3-channel input and 7 mask classes. The bundled segmentation metadata defines
-background 0, femur 1, tibia 2, fibula 3, tibia–fibula overlap 4, patella 5,
-and a femoral child region 6. The default four soft anatomical maps therefore
-merge `[[1,6], [2,4], [3,4], [5]]`. This is editable as
-`model.bone_class_groups`; verify the historical checkpoint used the same
-class definition before publishing a full experiment.
+The landmark configuration now matches the 11-class `RWKV_UNetV3` run:
+640×640, three backbone input channels and eleven segmentation outputs. The
+bundled metadata defines background 0, core bone classes 1–5, femoral child
+regions 6–7 and tibial child regions 8–10. The four soft anatomical maps merge
+`[[1,6,7], [2,4,8,9,10], [3,4], [5]]` for femur, tibia, fibula and patella.
+This remains editable as `model.bone_class_groups`.
 
 The default loader keeps pixels in `[0, 1]` (`mean=0`, `std=1`) to match the
 preprocessing used to train that checkpoint. The adapter repeats the single

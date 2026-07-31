@@ -119,7 +119,14 @@ class YoloPoseLandmarkDataset(Dataset):
             raise ValueError("The landmark dataset contains no images")
         self.image_paths = image_paths
         self.config = config
-        self.augment = augment
+        strategy = config.aug_strategy.lower().strip()
+        if strategy not in {"xray", "basic", "none", "off"}:
+            raise ValueError(
+                f"Unknown landmark augmentation strategy '{config.aug_strategy}'. "
+                "Available: xray, basic, none"
+            )
+        self.aug_strategy = strategy
+        self.augment = augment and strategy not in {"none", "off"}
 
     def __len__(self) -> int:
         return len(self.image_paths)
@@ -176,7 +183,8 @@ class YoloPoseLandmarkDataset(Dataset):
 
         if self.augment:
             image, landmarks, visibility = self._augment_geometry(image, landmarks, visibility)
-            image = self._augment_intensity(image)
+            if self.aug_strategy == "xray":
+                image = self._augment_intensity(image)
 
         image = image.resize(
             (self.config.image_width, self.config.image_height),

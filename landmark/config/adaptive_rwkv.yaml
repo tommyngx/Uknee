@@ -9,6 +9,7 @@ data:
   normalize_mean: 0.0
   normalize_std: 1.0
   augment: true
+  aug_strategy: xray
   rotation_degrees: 7.0
   scale_min: 0.95
   scale_max: 1.05
@@ -19,11 +20,11 @@ model:
   num_landmarks: 129
   num_bones: 4
   input_channels: 3
-  num_mask_classes: 7
+  num_mask_classes: 11
   bone_class_indices: [1, 2, 3, 5]
   # Merge overlap/parent regions from the bundled segmentation class metadata.
   # femur, tibia, fibula, patella respectively:
-  bone_class_groups: [[1, 6], [2, 4], [3, 4], [5]]
+  bone_class_groups: [[1, 6, 7], [2, 4, 8, 9, 10], [3, 4], [5]]
   query_dim: 128
   attention_heads: 4
   transformer_layers: 2
@@ -32,7 +33,8 @@ model:
   local_patch_size: 24
   token_patch_size: 3
   freeze_backbone: true
-  checkpoint: Ref/RWKV_200_0.966.pth
+  # Pass the 11-class segmentation checkpoint with --checkpoint.
+  checkpoint: ""
   strict_checkpoint: true
 
 loss:

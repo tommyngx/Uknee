@@ -24,7 +24,7 @@ class ModelTests(unittest.TestCase):
         model = build_model(config)
         image = torch.randn(1, 1, 64, 64)
         outputs = model(image)
-        self.assertEqual(outputs["segmentation_logits"].shape, (1, 7, 64, 64))
+        self.assertEqual(outputs["segmentation_logits"].shape, (1, 11, 64, 64))
         self.assertEqual(outputs["coarse_landmarks"].shape, (1, 129, 2))
         self.assertEqual(outputs["final_landmarks"].shape, (1, 129, 2))
         self.assertEqual(outputs["landmark_confidence"].shape, (1, 129))

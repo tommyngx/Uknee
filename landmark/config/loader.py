@@ -18,6 +18,7 @@ class DataConfig:
     normalize_mean: float = 0.0
     normalize_std: float = 1.0
     augment: bool = True
+    aug_strategy: str = "xray"
     rotation_degrees: float = 7.0
     scale_min: float = 0.95
     scale_max: float = 1.05
@@ -30,10 +31,10 @@ class ModelConfig:
     num_landmarks: int = 129
     num_bones: int = 4
     input_channels: int = 3
-    num_mask_classes: int = 7
+    num_mask_classes: int = 11
     bone_class_indices: list[int] = field(default_factory=lambda: [1, 2, 3, 5])
     bone_class_groups: list[list[int]] = field(
-        default_factory=lambda: [[1, 6], [2, 4], [3, 4], [5]]
+        default_factory=lambda: [[1, 6, 7], [2, 4, 8, 9, 10], [3, 4], [5]]
     )
     query_dim: int = 128
     attention_heads: int = 4
@@ -43,7 +44,7 @@ class ModelConfig:
     local_patch_size: int = 24
     token_patch_size: int = 3
     freeze_backbone: bool = True
-    checkpoint: str = "Ref/RWKV_200_0.966.pth"
+    checkpoint: str = ""
     strict_checkpoint: bool = True
     vit_patch_size: int = 16
     vit_depth: int = 6

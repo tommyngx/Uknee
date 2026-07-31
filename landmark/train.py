@@ -25,20 +25,147 @@ from landmark.utils.plotting import TrainingPlotter
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Uknee landmark model")
+    parser = argparse.ArgumentParser(
+        description="Train a Uknee landmark model",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument(
         "--config",
         default="landmark/config/adaptive_rwkv.yaml",
         help="Experiment YAML path",
     )
-    parser.add_argument("--resume", default="", help="Training checkpoint to resume")
-    parser.add_argument("--epochs", type=int, default=None, help="Override YAML epochs")
-    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
+    parser.add_argument(
+        "--resume",
+        default="",
+        help="Resume a complete landmark-training checkpoint",
+    )
+    parser.add_argument(
+        "--epochs",
+        "--max-epochs",
+        "--max_epochs",
+        dest="epochs",
+        type=int,
+        default=None,
+        help="Override YAML epochs",
+    )
+    parser.add_argument(
+        "--batch-size",
+        "--batch_size",
+        dest="batch_size",
+        type=int,
+        default=None,
+        help="Override batch size",
+    )
     parser.add_argument("--device", default=None, help="cuda, mps, cpu, or auto")
-    parser.add_argument("--checkpoint", default=None, help="Override segmentation backbone checkpoint")
-    parser.add_argument("--yaml-path", default=None, help="Override dataset data.yaml path")
-    parser.add_argument("--num-mask-classes", type=int, default=None, help="Override segmentation class count")
+    parser.add_argument(
+        "--checkpoint",
+        "--pretrained-path",
+        "--pretrained_path",
+        dest="checkpoint",
+        default=None,
+        help="Pretrained segmentation backbone checkpoint",
+    )
+    parser.add_argument(
+        "--yaml-path",
+        "--yaml_path",
+        dest="yaml_path",
+        default=None,
+        help="YOLO-Pose data.yaml path",
+    )
+    parser.add_argument(
+        "--num-mask-classes",
+        "--num_mask_classes",
+        dest="num_mask_classes",
+        type=int,
+        default=11,
+        help="Segmentation output class count",
+    )
+    parser.add_argument(
+        "--output-dir",
+        "--output_dir",
+        dest="output_dir",
+        default=None,
+        help="Root directory for landmark training runs",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=2006,
+        help="Training, augmentation and split seed",
+    )
+    parser.add_argument(
+        "--img-size",
+        "--img_size",
+        dest="img_size",
+        type=int,
+        default=640,
+        help="Square training image size",
+    )
+    parser.add_argument(
+        "--aug-strategy",
+        "--aug_strategy",
+        dest="aug_strategy",
+        choices=("xray", "basic", "none"),
+        default="xray",
+        help="Synchronous image/landmark augmentation policy",
+    )
+    parser.add_argument(
+        "--base-lr",
+        "--base_lr",
+        "--learning-rate",
+        dest="learning_rate",
+        type=float,
+        default=None,
+        help="Landmark decoder AdamW learning rate",
+    )
+    parser.add_argument(
+        "--exp-name",
+        "--exp_name",
+        dest="experiment_name",
+        default=None,
+        help="Experiment subdirectory name",
+    )
+    parser.add_argument(
+        "--num-workers",
+        "--num_workers",
+        dest="num_workers",
+        type=int,
+        default=None,
+        help="DataLoader worker count",
+    )
     return parser.parse_args()
+
+
+def apply_cli_overrides(config, args: argparse.Namespace):
+    """Apply command-line values after YAML; CLI always has final precedence."""
+    if args.epochs is not None:
+        config.training.epochs = args.epochs
+    if args.batch_size is not None:
+        config.training.batch_size = args.batch_size
+    if args.device is not None:
+        config.training.device = args.device
+    if args.resume:
+        config.training.resume = args.resume
+    if args.checkpoint is not None:
+        config.model.checkpoint = args.checkpoint
+    if args.yaml_path is not None:
+        config.data.yaml_path = args.yaml_path
+    config.model.num_mask_classes = args.num_mask_classes
+    if args.output_dir is not None:
+        config.training.output_dir = args.output_dir
+    config.training.seed = args.seed
+    config.data.seed = args.seed
+    config.data.image_height = args.img_size
+    config.data.image_width = args.img_size
+    config.data.aug_strategy = args.aug_strategy
+    config.data.augment = args.aug_strategy != "none"
+    if args.learning_rate is not None:
+        config.training.learning_rate = args.learning_rate
+    if args.experiment_name is not None:
+        config.training.experiment_name = args.experiment_name
+    if args.num_workers is not None:
+        config.data.num_workers = args.num_workers
+    return config
 
 
 
@@ -178,21 +305,7 @@ def _scheduler(optimizer, epochs: int, warmup_epochs: int):
 
 def main() -> None:
     args = parse_args()
-    config = load_config(args.config)
-    if args.epochs is not None:
-        config.training.epochs = args.epochs
-    if args.batch_size is not None:
-        config.training.batch_size = args.batch_size
-    if args.device is not None:
-        config.training.device = args.device
-    if args.resume:
-        config.training.resume = args.resume
-    if args.checkpoint is not None:
-        config.model.checkpoint = args.checkpoint
-    if args.yaml_path is not None:
-        config.data.yaml_path = args.yaml_path
-    if args.num_mask_classes is not None:
-        config.model.num_mask_classes = args.num_mask_classes
+    config = apply_cli_overrides(load_config(args.config), args)
 
     _seed_everything(config.training.seed)
     device = _device(config.training.device)
@@ -217,6 +330,15 @@ def main() -> None:
     )
     logging.info("Run directory: %s", run_dir)
     logging.info("Device: %s", device)
+    logging.info(
+        "Resolved setup: img_size=%dx%d mask_classes=%d seed=%d aug_strategy=%s",
+        config.data.image_height,
+        config.data.image_width,
+        config.model.num_mask_classes,
+        config.training.seed,
+        config.data.aug_strategy,
+    )
+    logging.info("Segmentation checkpoint: %s", config.model.checkpoint or "<none>")
 
     train_loader, val_loader = build_dataloaders(
         config.data, config.training.batch_size

@@ -14,7 +14,6 @@ When updating this package:
 9. Run `python -m unittest discover -s landmark/tests -v` after changes.
 10. Run a small 8–16 image overfit experiment before full training.
 
-`bone_class_groups` refers to the seven-class segmentation checkpoint, not the
-four YOLO-Pose class IDs. The default uses `[[1,6], [2,4], [3,4], [5]]` from
-the bundled metadata. Confirm the historical checkpoint used that class
-definition before publishing measurements.
+`bone_class_groups` refers to the eleven-class segmentation checkpoint, not
+the four YOLO-Pose class IDs. The default uses
+`[[1,6,7], [2,4,8,9,10], [3,4], [5]]` from the bundled metadata.

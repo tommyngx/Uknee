@@ -5,6 +5,7 @@ data:
   num_workers: 4
   val_fraction: 0.15
   augment: true
+  aug_strategy: xray
 
 model:
   name: hrnet
