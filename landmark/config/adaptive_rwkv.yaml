@@ -38,22 +38,22 @@ model:
   strict_checkpoint: true
 
 loss:
-  coarse_weight: 0.5
+  coarse_weight: 1.0
   coordinate_weight: 1.0
   heatmap_weight: 1.0
   bone_constraint_weight: 0.05
-  heatmap_sigma: 1.5
+  heatmap_sigma: 1.0
 
 training:
   experiment_name: adaptive_rwkv_landmark
   output_dir: landmark/runs
-  epochs: 100
-  batch_size: 4
+  epochs: 1000
+  batch_size: 8
   learning_rate: 0.0001
   weight_decay: 0.0001
   warmup_epochs: 5
-  coarse_only_epochs: 10
-  teacher_forcing_epochs: 20
+  coarse_only_epochs: 30
+  teacher_forcing_epochs: 15
   teacher_noise_pixels: 15.0
   gradient_clip: 1.0
   amp: true
