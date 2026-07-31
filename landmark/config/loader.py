@@ -46,6 +46,9 @@ class ModelConfig:
     freeze_backbone: bool = True
     checkpoint: str = ""
     strict_checkpoint: bool = True
+    contour_tokens_per_bone: int = 512
+    contour_temperature: float = 0.05
+    contour_kernel_size: int = 3
     vit_patch_size: int = 16
     vit_depth: int = 6
     hrnet_width: int = 32

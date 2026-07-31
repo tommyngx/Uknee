@@ -404,6 +404,11 @@ def main() -> None:
             "val_pck8": metrics["pck8"],
             "learning_rate": optimizer.param_groups[0]["lr"],
         }
+        if "contour_oracle_loss" in val_losses:
+            row["contour_oracle_px"] = val_losses["contour_oracle_loss"] * max(
+                config.data.image_height - 1,
+                config.data.image_width - 1,
+            )
         plotter.update(row)
         if sample_batch is not None:
             plotter.overlay(

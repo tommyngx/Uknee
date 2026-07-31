@@ -19,6 +19,41 @@ def _small_config():
 
 
 class ModelTests(unittest.TestCase):
+    def test_kneepv1_outputs_are_snapped_to_same_bone_contour_tokens(self):
+        config = _small_config()
+        config.model.name = "kneepv1"
+        config.model.transformer_layers = 1
+        config.model.contour_tokens_per_bone = 16
+        model = build_model(config)
+        image = torch.randn(1, 1, 64, 64)
+        outputs = model(image)
+
+        self.assertEqual(outputs["final_landmarks"].shape, (1, 129, 2))
+        self.assertEqual(
+            outputs["contour_assignment_logits"].shape,
+            (1, 129, 16),
+        )
+        candidates = outputs["contour_candidate_coordinates"]
+        distance = torch.linalg.vector_norm(
+            outputs["final_landmarks"][:, :, None] - candidates,
+            dim=-1,
+        )
+        self.assertTrue(bool((distance.min(dim=-1).values <= 1.0e-6).all()))
+
+        batch = {
+            "landmarks": torch.rand(1, 129, 2),
+            "landmark_visibility": torch.ones(1, 129),
+        }
+        losses = LandmarkLoss(config.loss)(outputs, batch)
+        losses["loss"].backward()
+        self.assertTrue(
+            all(
+                parameter.grad is None
+                for parameter in model.backbone_adapter.backbone.parameters()
+            )
+        )
+        self.assertTrue(model.landmark_queries.weight.grad is not None)
+
     def test_adaptive_model_shapes_ranges_and_frozen_backbone(self):
         config = _small_config()
         model = build_model(config)

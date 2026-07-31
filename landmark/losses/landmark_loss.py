@@ -19,6 +19,16 @@ def _masked_smooth_l1(
     return (loss * weights).sum() / weights.sum().clamp_min(1)
 
 
+def _masked_l1(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    visibility: torch.Tensor,
+) -> torch.Tensor:
+    loss = F.l1_loss(prediction, target, reduction="none").sum(dim=-1)
+    weights = visibility.to(loss.dtype)
+    return (loss * weights).sum() / weights.sum().clamp_min(1)
+
+
 def _gaussian_heatmaps(
     centers_xy: torch.Tensor,
     height: int,
@@ -117,6 +127,32 @@ class LandmarkLoss(nn.Module):
         weights = visibility.to(loss.dtype)
         return (loss * weights).sum() / weights.sum().clamp_min(1)
 
+    def _contour_assignment_loss(
+        self,
+        outputs: dict[str, torch.Tensor],
+        target: torch.Tensor,
+        visibility: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        candidates = outputs["contour_candidate_coordinates"]
+        logits = outputs["contour_assignment_logits"]
+        squared_distance = (candidates - target[:, :, None]).square().sum(dim=-1)
+        nearest = squared_distance.argmin(dim=-1)
+        per_landmark = F.cross_entropy(
+            logits.flatten(0, 1),
+            nearest.flatten(),
+            reduction="none",
+        ).view_as(visibility)
+        weights = visibility.to(per_landmark.dtype)
+        assignment = (per_landmark * weights).sum() / weights.sum().clamp_min(1)
+        oracle = (
+            squared_distance.gather(-1, nearest[..., None])
+            .squeeze(-1)
+            .clamp_min(0)
+            .sqrt()
+        )
+        oracle = (oracle * weights).sum() / weights.sum().clamp_min(1)
+        return assignment, oracle
+
     def forward(
         self,
         outputs: dict[str, torch.Tensor],
@@ -125,14 +161,17 @@ class LandmarkLoss(nn.Module):
     ) -> dict[str, torch.Tensor]:
         target = batch["landmarks"]
         visibility = batch["landmark_visibility"]
-        coarse = _masked_smooth_l1(
-            outputs["coarse_landmarks"], target, visibility
-        )
-        coordinate = _masked_smooth_l1(
-            outputs["final_landmarks"], target, visibility
-        )
+        contour_constrained = "contour_assignment_logits" in outputs
+        coordinate_loss = _masked_l1 if contour_constrained else _masked_smooth_l1
+        coarse = coordinate_loss(outputs["coarse_landmarks"], target, visibility)
+        coordinate = coordinate_loss(outputs["final_landmarks"], target, visibility)
         zero = coordinate * 0
-        if "local_heatmaps" in outputs:
+        contour_oracle = zero
+        if contour_constrained:
+            heatmap, contour_oracle = self._contour_assignment_loss(
+                outputs, target, visibility
+            )
+        elif "local_heatmaps" in outputs:
             heatmap = self._local_heatmap_loss(outputs, target, visibility)
         elif "global_heatmaps" in outputs:
             heatmap = self._global_heatmap_loss(
@@ -140,7 +179,11 @@ class LandmarkLoss(nn.Module):
             )
         else:
             heatmap = zero
-        bone = self._bone_constraint_loss(outputs, visibility)
+        bone = (
+            self._bone_constraint_loss(outputs, visibility)
+            if self.config.bone_constraint_weight
+            else zero
+        )
 
         if phase == "coarse":
             total = self.config.coarse_weight * coarse
@@ -157,4 +200,5 @@ class LandmarkLoss(nn.Module):
             "coordinate_loss": coordinate,
             "heatmap_loss": heatmap,
             "bone_constraint_loss": bone,
+            "contour_oracle_loss": contour_oracle,
         }

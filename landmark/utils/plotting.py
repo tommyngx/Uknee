@@ -45,7 +45,13 @@ class TrainingPlotter:
         axes[0].set_title("Loss by epoch")
         axes[0].set_xlabel("Epoch")
         axes[0].legend(fontsize=8)
-        for key in ("val_mre", "val_pck4", "val_pck8", "learning_rate"):
+        for key in (
+            "val_mre",
+            "val_pck4",
+            "val_pck8",
+            "contour_oracle_px",
+            "learning_rate",
+        ):
             if any(key in row for row in self.history):
                 axes[1].plot(epoch, [row.get(key, np.nan) for row in self.history], label=key)
         axes[1].set_title("Validation / learning rate")

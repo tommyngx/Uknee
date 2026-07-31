@@ -9,6 +9,7 @@ from landmark.config.loader import ExperimentConfig
 from .adaptive_rwkv import RWKVUNetLandmarkModel
 from .backbone_adapter import build_rwkv_v3_backbone
 from .hrnet import HRNetLandmarkBaseline
+from .kneepv1 import KneePV1ContourDETR
 from .vitpose import ViTPoseLandmarkBaseline
 
 
@@ -40,6 +41,19 @@ def _build_adaptive_rwkv(config: ExperimentConfig) -> nn.Module:
 
 
 register_model("adaptive_detr_rwkv")(_build_adaptive_rwkv)
+
+
+@register_model("kneepv1")
+def _build_kneepv1(config: ExperimentConfig) -> nn.Module:
+    model_config = config.model
+    backbone = build_rwkv_v3_backbone(
+        input_channels=model_config.input_channels,
+        num_mask_classes=model_config.num_mask_classes,
+        image_size=config.data.image_height,
+        checkpoint=model_config.checkpoint,
+        strict=model_config.strict_checkpoint,
+    )
+    return KneePV1ContourDETR(backbone, model_config)
 
 
 @register_model("vitpose")

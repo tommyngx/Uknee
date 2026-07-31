@@ -6,6 +6,9 @@ supports three model names:
 
 - `adaptive_rwkv` / `adaptive_detr_rwkv`: frozen RWKV_UNetV3 segmentation
   backbone plus coarse-to-local anatomical landmark queries.
+- `kneepv1`: frozen 11-class RWKV segmentation, differentiable contour
+  extraction and ordered DETR queries whose final points are snapped to the
+  predicted contour of the correct bone.
 - `vitpose`: compact ViTPose-style heatmap baseline.
 - `hrnet`: compact two-resolution HRNet-style heatmap baseline.
 
@@ -48,6 +51,7 @@ above. The CLI also accepts underscore aliases matching `main.py`, for example
 Baseline examples:
 
 ```bash
+python -m landmark.train --config landmark/config/kneepv1.yaml
 python -m landmark.train --config landmark/config/vitpose.yaml
 python -m landmark.train --config landmark/config/hrnet.yaml
 ```
@@ -75,6 +79,11 @@ The adaptive model uses this curriculum:
 3. complete landmark decoder using its predicted references.
 
 The segmentation backbone remains frozen and stays in evaluation mode.
+
+`kneepv1` does not use that curriculum. It trains its contour-token assignment
+decoder end-to-end from epoch 1 while keeping only the segmentation backbone
+frozen. Its `contour_oracle_px` history value is the lower-bound error supplied
+by the current segmentation contours.
 
 ## Evaluate
 

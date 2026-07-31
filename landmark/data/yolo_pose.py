@@ -70,6 +70,18 @@ def _label_path(image_path: Path) -> Path:
     return Path(*parts).with_suffix(".txt")
 
 
+def _split_group_key(image_path: Path) -> str:
+    """Group original/flip and bilateral images from the same case."""
+    stem = image_path.stem
+    if stem.endswith("Flip"):
+        stem = stem[:-4]
+    for side_suffix in ("_L", "_R"):
+        if stem.endswith(side_suffix):
+            stem = stem[: -len(side_suffix)]
+            break
+    return stem
+
+
 def parse_yolo_pose_label(path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     landmarks = torch.zeros(NUM_LANDMARKS, 2, dtype=torch.float32)
     visibility = torch.zeros(NUM_LANDMARKS, dtype=torch.float32)
@@ -218,12 +230,28 @@ def build_dataloaders(
 
     same_split = {item.resolve() for item in train_paths} == {item.resolve() for item in val_paths}
     if not val_paths or same_split:
+        grouped_paths: dict[str, list[Path]] = {}
+        for path in train_paths:
+            grouped_paths.setdefault(_split_group_key(path), []).append(path)
+        group_names = sorted(grouped_paths)
         generator = torch.Generator().manual_seed(config.seed)
-        order = torch.randperm(len(train_paths), generator=generator).tolist()
-        val_count = max(1, int(round(len(order) * config.val_fraction)))
-        val_indices = set(order[:val_count])
-        val_paths = [path for idx, path in enumerate(train_paths) if idx in val_indices]
-        train_paths = [path for idx, path in enumerate(train_paths) if idx not in val_indices]
+        order = torch.randperm(len(group_names), generator=generator).tolist()
+        val_group_count = max(
+            1, int(round(len(group_names) * config.val_fraction))
+        )
+        val_groups = {group_names[index] for index in order[:val_group_count]}
+        val_paths = [
+            path
+            for group_name, paths in grouped_paths.items()
+            if group_name in val_groups
+            for path in paths
+        ]
+        train_paths = [
+            path
+            for group_name, paths in grouped_paths.items()
+            if group_name not in val_groups
+            for path in paths
+        ]
 
     kwargs = {
         "batch_size": batch_size,

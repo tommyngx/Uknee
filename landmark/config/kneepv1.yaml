@@ -1,0 +1,61 @@
+data:
+  yaml_path: Ref/yolo_mesko4GF2/data.yaml
+  image_height: 640
+  image_width: 640
+  num_workers: 4
+  val_fraction: 0.15
+  seed: 2006
+  normalize_mean: 0.0
+  normalize_std: 1.0
+  augment: true
+  aug_strategy: xray
+  rotation_degrees: 7.0
+  scale_min: 0.95
+  scale_max: 1.05
+  translate_fraction: 0.04
+
+model:
+  name: kneepv1
+  num_landmarks: 129
+  num_bones: 4
+  input_channels: 3
+  num_mask_classes: 11
+  bone_class_indices: [1, 2, 3, 5]
+  bone_class_groups: [[1, 6, 7], [2, 4, 8, 9, 10], [3, 4], [5]]
+  query_dim: 128
+  attention_heads: 4
+  transformer_layers: 2
+  transformer_ffn_dim: 256
+  transformer_dropout: 0.1
+  freeze_backbone: true
+  checkpoint: Ref/checkpoint_last.pth
+  strict_checkpoint: true
+  contour_tokens_per_bone: 512
+  contour_temperature: 0.05
+  contour_kernel_size: 3
+
+loss:
+  coarse_weight: 0.0
+  coordinate_weight: 1.0
+  heatmap_weight: 1.0
+  bone_constraint_weight: 0.0
+  heatmap_sigma: 1.5
+
+training:
+  experiment_name: kneepv1
+  output_dir: landmark/runs
+  epochs: 120
+  batch_size: 4
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  warmup_epochs: 5
+  coarse_only_epochs: 0
+  teacher_forcing_epochs: 0
+  teacher_noise_pixels: 0.0
+  gradient_clip: 1.0
+  amp: true
+  seed: 2006
+  device: auto
+  resume: ""
+  save_every: 10
+  plot_samples: 4
