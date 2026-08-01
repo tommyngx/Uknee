@@ -1,8 +1,40 @@
 from __future__ import annotations
 
+import math
+
+import torch
 from torch import nn
 
 from .heatmap_baseline import decode_global_heatmaps
+
+
+def _sincos_position_2d(
+    height: int,
+    width: int,
+    channels: int,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor:
+    """Return deterministic 2D absolute positions in raster token order."""
+    frequencies_per_axis = max(math.ceil(channels / 4), 1)
+    frequencies = torch.arange(
+        frequencies_per_axis, dtype=torch.float32, device=device
+    )
+    frequencies = torch.exp(
+        -math.log(10_000.0)
+        * frequencies
+        / max(frequencies_per_axis - 1, 1)
+    )
+    ys = torch.linspace(0, 1, height, dtype=torch.float32, device=device)
+    xs = torch.linspace(0, 1, width, dtype=torch.float32, device=device)
+    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+    x_angles = xx[..., None] * frequencies
+    y_angles = yy[..., None] * frequencies
+    encoding = torch.cat(
+        (x_angles.sin(), x_angles.cos(), y_angles.sin(), y_angles.cos()),
+        dim=-1,
+    )[..., :channels]
+    return encoding.reshape(1, height * width, channels).to(dtype=dtype)
 
 
 class ViTPoseLandmarkBaseline(nn.Module):
@@ -48,6 +80,13 @@ class ViTPoseLandmarkBaseline(nn.Module):
         features = self.patch_embed(image)
         batch, channels, height, width = features.shape
         tokens = features.flatten(2).transpose(1, 2)
+        tokens = tokens + _sincos_position_2d(
+            height,
+            width,
+            channels,
+            tokens.dtype,
+            tokens.device,
+        )
         tokens = self.norm(self.transformer(tokens))
         features = tokens.transpose(1, 2).reshape(batch, channels, height, width)
         return decode_global_heatmaps(self.heatmap_head(features))

@@ -14,9 +14,18 @@ model:
   hrnet_width: 32
   checkpoint: ""
 
+loss:
+  coarse_weight: 0.0
+  coarse_heatmap_weight: 0.0
+  coordinate_weight: 1.0
+  heatmap_weight: 1.0
+  bone_constraint_weight: 0.0
+  heatmap_sigma: 1.5
+  heatmap_temperature: 1.0
+
 training:
   experiment_name: hrnet_baseline
   output_dir: landmark/runs
-  epochs: 100
+  epochs: 120
   batch_size: 4
   learning_rate: 0.0001

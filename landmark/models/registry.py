@@ -10,6 +10,7 @@ from .adaptive_rwkv import RWKVUNetLandmarkModel
 from .backbone_adapter import build_rwkv_v3_backbone
 from .hrnet import HRNetLandmarkBaseline
 from .kneepv1 import KneePV1ContourDETR
+from .kneepv2 import KneePV2TopologyDETR
 from .vitpose import ViTPoseLandmarkBaseline
 
 
@@ -54,6 +55,19 @@ def _build_kneepv1(config: ExperimentConfig) -> nn.Module:
         strict=model_config.strict_checkpoint,
     )
     return KneePV1ContourDETR(backbone, model_config)
+
+
+@register_model("kneepv2")
+def _build_kneepv2(config: ExperimentConfig) -> nn.Module:
+    model_config = config.model
+    backbone = build_rwkv_v3_backbone(
+        input_channels=model_config.input_channels,
+        num_mask_classes=model_config.num_mask_classes,
+        image_size=config.data.image_height,
+        checkpoint=model_config.checkpoint,
+        strict=model_config.strict_checkpoint,
+    )
+    return KneePV2TopologyDETR(backbone, model_config)
 
 
 @register_model("vitpose")

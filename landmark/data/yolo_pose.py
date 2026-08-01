@@ -86,7 +86,7 @@ def parse_yolo_pose_label(path: Path) -> tuple[torch.Tensor, torch.Tensor]:
     landmarks = torch.zeros(NUM_LANDMARKS, 2, dtype=torch.float32)
     visibility = torch.zeros(NUM_LANDMARKS, dtype=torch.float32)
     if not path.exists():
-        return landmarks, visibility
+        raise FileNotFoundError(f"Landmark label does not exist: {path}")
 
     seen_classes: set[int] = set()
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -131,6 +131,16 @@ class YoloPoseLandmarkDataset(Dataset):
             raise ValueError("The landmark dataset contains no images")
         self.image_paths = image_paths
         self.config = config
+        missing_labels = [
+            str(_label_path(path))
+            for path in image_paths
+            if not _label_path(path).is_file()
+        ]
+        if missing_labels:
+            preview = ", ".join(missing_labels[:3])
+            raise FileNotFoundError(
+                f"Missing {len(missing_labels)} landmark label(s), including: {preview}"
+            )
         strategy = config.aug_strategy.lower().strip()
         if strategy not in {"xray", "basic", "none", "off"}:
             raise ValueError(

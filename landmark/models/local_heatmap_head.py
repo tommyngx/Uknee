@@ -14,7 +14,7 @@ def _groups(channels: int) -> int:
 
 
 class QueryConditionedLocalHeatmapHead(nn.Module):
-    def __init__(self, query_dim: int, temperature: float = 0.1):
+    def __init__(self, query_dim: int, temperature: float = 1.0):
         super().__init__()
         hidden = max(query_dim // 2, 8)
         self.temperature = temperature

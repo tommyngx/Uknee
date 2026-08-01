@@ -49,6 +49,8 @@ class ModelConfig:
     contour_tokens_per_bone: int = 512
     contour_temperature: float = 0.05
     contour_kernel_size: int = 3
+    topology_mixer_layers: int = 2
+    topology_unique_inference: bool = True
     vit_patch_size: int = 16
     vit_depth: int = 6
     hrnet_width: int = 32
@@ -57,10 +59,15 @@ class ModelConfig:
 @dataclass
 class LossConfig:
     coarse_weight: float = 0.5
+    coarse_heatmap_weight: float = 0.0
     coordinate_weight: float = 1.0
     heatmap_weight: float = 1.0
     bone_constraint_weight: float = 0.05
     heatmap_sigma: float = 1.5
+    heatmap_temperature: float = 1.0
+    topology_edge_weight: float = 0.0
+    topology_curvature_weight: float = 0.0
+    topology_duplicate_weight: float = 0.0
 
 
 @dataclass
@@ -75,6 +82,8 @@ class TrainingConfig:
     coarse_only_epochs: int = 10
     teacher_forcing_epochs: int = 20
     teacher_noise_pixels: float = 15.0
+    topology_start_epoch: int = 1
+    topology_ramp_epochs: int = 0
     gradient_clip: float = 1.0
     amp: bool = True
     seed: int = 2006

@@ -54,6 +54,7 @@ def save_checkpoint(
     epoch: int,
     best_metric: float,
     config: dict[str, Any],
+    tracking: dict[str, Any] | None = None,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,6 +66,7 @@ def save_checkpoint(
             "scheduler": scheduler.state_dict() if scheduler is not None else None,
             "best_metric": best_metric,
             "config": config,
+            "tracking": tracking or {},
         },
         path,
     )

@@ -153,20 +153,27 @@ class RWKVUNetLandmarkModel(nn.Module):
         bone_probabilities = self.get_bone_probabilities(
             backbone["segmentation_logits"]
         )
-        coarse = self.coarse_reference_head(
+        coarse_outputs = self.coarse_reference_head(
             backbone["feature_mid"],
             backbone["feature_low"],
             bone_probabilities,
         )
+        coarse = coarse_outputs["coordinates"]
         reference = coarse if reference_landmarks is None else reference_landmarks.clamp(0, 1)
+        # Stop local appearance/heatmap gradients from moving the coarse patch
+        # centres. The final coordinate still contains `reference`, so its
+        # coordinate loss supervises the coarse head directly.
+        refinement_context = reference.detach()
         sampled = self.local_feature_sampler(
             backbone["feature_high"],
             backbone["feature_mid"],
             backbone["feature_low"],
             bone_probabilities,
-            reference,
+            refinement_context,
         )
-        queries = self.query_initializer(reference, sampled["local_tokens"])
+        queries = self.query_initializer(
+            refinement_context, sampled["local_tokens"]
+        )
         queries = self.landmark_transformer(queries)
         refined = self.local_heatmap_head(
             sampled["local_patches_high"],
@@ -178,12 +185,14 @@ class RWKVUNetLandmarkModel(nn.Module):
             "segmentation_logits": backbone["segmentation_logits"],
             "bone_probabilities": bone_probabilities,
             "coarse_landmarks": coarse,
+            "coarse_landmark_confidence": coarse_outputs["confidence"],
             "refinement_reference": reference,
             "local_patch_radius_xy": sampled["patch_radius_xy"],
             "final_landmarks": refined["final_coordinates"],
             "landmark_confidence": refined["confidence"],
         }
         if return_heatmaps:
+            outputs["coarse_heatmaps"] = coarse_outputs["heatmaps"]
             outputs["local_heatmaps"] = refined["local_heatmaps"]
         if return_features:
             outputs.update(

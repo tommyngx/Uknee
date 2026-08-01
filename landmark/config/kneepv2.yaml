@@ -15,7 +15,7 @@ data:
   translate_fraction: 0.04
 
 model:
-  name: kneepv1
+  name: kneepv2
   num_landmarks: 129
   num_bones: 4
   input_channels: 3
@@ -33,6 +33,8 @@ model:
   contour_tokens_per_bone: 512
   contour_temperature: 0.05
   contour_kernel_size: 3
+  topology_mixer_layers: 2
+  topology_unique_inference: true
 
 loss:
   coarse_weight: 0.0
@@ -42,9 +44,12 @@ loss:
   bone_constraint_weight: 0.0
   heatmap_sigma: 1.5
   heatmap_temperature: 1.0
+  topology_edge_weight: 0.25
+  topology_curvature_weight: 0.1
+  topology_duplicate_weight: 0.05
 
 training:
-  experiment_name: kneepv1
+  experiment_name: kneepv2
   output_dir: landmark/runs
   epochs: 120
   batch_size: 4
@@ -54,6 +59,8 @@ training:
   coarse_only_epochs: 0
   teacher_forcing_epochs: 0
   teacher_noise_pixels: 0.0
+  topology_start_epoch: 5
+  topology_ramp_epochs: 15
   gradient_clip: 1.0
   amp: true
   seed: 2006

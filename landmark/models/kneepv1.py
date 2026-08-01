@@ -199,6 +199,21 @@ class KneePV1ContourDETR(nn.Module):
             )
         return torch.cat(chunks, dim=1) / self.temperature
 
+    def _build_landmark_queries(self, batch_size: int) -> torch.Tensor:
+        """Build decoder queries; subclasses may add topology information."""
+        queries = self.landmark_queries.weight[None].expand(batch_size, -1, -1)
+        return queries + self.bone_embedding(self.point_bone_ids)[None]
+
+    def _refine_decoded_queries(self, decoded: torch.Tensor) -> torch.Tensor:
+        """Extension hook for topology-aware query mixing."""
+        return decoded
+
+    def _hard_assignment_indices(
+        self, assignment_logits: torch.Tensor
+    ) -> torch.Tensor:
+        """Select contour tokens independently, preserving KneePV1 behavior."""
+        return assignment_logits.argmax(dim=-1)
+
     def forward(self, image: torch.Tensor, **_) -> dict[str, torch.Tensor]:
         backbone = self.backbone_adapter(image)
         bone_probabilities = self.get_bone_probabilities(
@@ -212,14 +227,14 @@ class KneePV1ContourDETR(nn.Module):
         )
 
         batch = image.shape[0]
-        queries = self.landmark_queries.weight[None].expand(batch, -1, -1)
-        queries = queries + self.bone_embedding(self.point_bone_ids)[None]
+        queries = self._build_landmark_queries(batch)
         memory = contour_tokens.flatten(1, 2)
         decoded = self.decoder(
             queries,
             memory,
             memory_mask=self.memory_mask,
         )
+        decoded = self._refine_decoded_queries(decoded)
         assignment_logits = self._assignment_logits(decoded, contour_tokens)
         probabilities = torch.softmax(assignment_logits, dim=-1)
 
@@ -227,7 +242,7 @@ class KneePV1ContourDETR(nn.Module):
         soft_coordinates = (
             probabilities[..., None] * candidates
         ).sum(dim=-2)
-        hard_indices = assignment_logits.argmax(dim=-1)
+        hard_indices = self._hard_assignment_indices(assignment_logits)
         hard_coordinates = torch.gather(
             candidates,
             dim=2,
@@ -246,6 +261,8 @@ class KneePV1ContourDETR(nn.Module):
             "contour_token_strengths": strengths,
             "contour_candidate_coordinates": candidates,
             "contour_assignment_logits": assignment_logits,
+            "contour_assignment_probabilities": probabilities,
+            "contour_assignment_indices": hard_indices,
             "coarse_landmarks": soft_coordinates,
             "final_landmarks": final_coordinates,
             "landmark_confidence": probabilities.max(dim=-1).values,

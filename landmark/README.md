@@ -2,13 +2,16 @@
 
 This package is independent from the existing segmentation training code. It
 loads class-wise YOLO-Pose labels, builds one ordered 129-point target, and
-supports three model names:
+supports these model names:
 
 - `adaptive_rwkv` / `adaptive_detr_rwkv`: frozen RWKV_UNetV3 segmentation
   backbone plus coarse-to-local anatomical landmark queries.
 - `kneepv1`: frozen 11-class RWKV segmentation, differentiable contour
   extraction and ordered DETR queries whose final points are snapped to the
   predicted contour of the correct bone.
+- `kneepv2`: KneePV1 plus six-path topology/order embeddings, local path query
+  mixing, edge/curvature/duplicate losses and unique-token path decoding at
+  evaluation time.
 - `vitpose`: compact ViTPose-style heatmap baseline.
 - `hrnet`: compact two-resolution HRNet-style heatmap baseline.
 
@@ -52,6 +55,7 @@ Baseline examples:
 
 ```bash
 python -m landmark.train --config landmark/config/kneepv1.yaml
+python -m landmark.train --config landmark/config/kneepv2.yaml
 python -m landmark.train --config landmark/config/vitpose.yaml
 python -m landmark.train --config landmark/config/hrnet.yaml
 ```
@@ -62,6 +66,7 @@ Each run creates:
 landmark/runs/<experiment>/<timestamp>/
 ├── checkpoints/
 │   ├── best.pt
+│   ├── best_order.pt
 │   └── epoch_XXXX.pt
 ├── logs/train.log
 ├── plots/
@@ -79,11 +84,21 @@ The adaptive model uses this curriculum:
 3. complete landmark decoder using its predicted references.
 
 The segmentation backbone remains frozen and stays in evaluation mode.
+Its coarse stage now uses spatial landmark heatmaps with semantic bone priors;
+legacy checkpoints created with the old pooled-coordinate coarse head are not
+architecture-compatible. See `landmark/models/README.md` for the canonical
+comparison and checkpoint policy.
 
 `kneepv1` does not use that curriculum. It trains its contour-token assignment
 decoder end-to-end from epoch 1 while keeping only the segmentation backbone
 frozen. Its `contour_oracle_px` history value is the lower-bound error supplied
 by the current segmentation contours.
+
+`kneepv2` models six independent ordered paths: femur `0-44`, tibia main
+`45-85`, tibia plateau A `86-90`, tibia plateau B `91-95`, fibula `96-119`
+and patella `120-128`. Topology losses ramp from epoch 5 through epoch 19 in
+the bundled configuration. Validation additionally reports order inversion,
+adjacent duplicate, edge-length and direction errors.
 
 ## Evaluate
 

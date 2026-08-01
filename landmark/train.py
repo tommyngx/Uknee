@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
         "--num_mask_classes",
         dest="num_mask_classes",
         type=int,
-        default=11,
+        default=None,
         help="Segmentation output class count",
     )
     parser.add_argument(
@@ -90,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--seed",
         type=int,
-        default=2006,
+        default=None,
         help="Training, augmentation and split seed",
     )
     parser.add_argument(
@@ -98,7 +98,7 @@ def parse_args() -> argparse.Namespace:
         "--img_size",
         dest="img_size",
         type=int,
-        default=640,
+        default=None,
         help="Square training image size",
     )
     parser.add_argument(
@@ -106,7 +106,7 @@ def parse_args() -> argparse.Namespace:
         "--aug_strategy",
         dest="aug_strategy",
         choices=("xray", "basic", "none"),
-        default="xray",
+        default=None,
         help="Synchronous image/landmark augmentation policy",
     )
     parser.add_argument(
@@ -150,15 +150,19 @@ def apply_cli_overrides(config, args: argparse.Namespace):
         config.model.checkpoint = args.checkpoint
     if args.yaml_path is not None:
         config.data.yaml_path = args.yaml_path
-    config.model.num_mask_classes = args.num_mask_classes
+    if args.num_mask_classes is not None:
+        config.model.num_mask_classes = args.num_mask_classes
     if args.output_dir is not None:
         config.training.output_dir = args.output_dir
-    config.training.seed = args.seed
-    config.data.seed = args.seed
-    config.data.image_height = args.img_size
-    config.data.image_width = args.img_size
-    config.data.aug_strategy = args.aug_strategy
-    config.data.augment = args.aug_strategy != "none"
+    if args.seed is not None:
+        config.training.seed = args.seed
+        config.data.seed = args.seed
+    if args.img_size is not None:
+        config.data.image_height = args.img_size
+        config.data.image_width = args.img_size
+    if args.aug_strategy is not None:
+        config.data.aug_strategy = args.aug_strategy
+        config.data.augment = args.aug_strategy != "none"
     if args.learning_rate is not None:
         config.training.learning_rate = args.learning_rate
     if args.experiment_name is not None:
@@ -166,6 +170,30 @@ def apply_cli_overrides(config, args: argparse.Namespace):
     if args.num_workers is not None:
         config.data.num_workers = args.num_workers
     return config
+
+
+def _validate_training_config(config) -> None:
+    if config.training.resume:
+        resume = Path(config.training.resume).expanduser()
+        if not resume.is_file():
+            raise FileNotFoundError(f"Resume checkpoint does not exist: {resume}")
+    model_name = config.model.name.lower()
+    needs_segmentation_backbone = model_name in {
+        "adaptive_rwkv",
+        "adaptive_detr_rwkv",
+        "kneepv1",
+        "kneepv2",
+    }
+    if not needs_segmentation_backbone:
+        return
+    checkpoint = Path(config.model.checkpoint).expanduser() if config.model.checkpoint else None
+    if config.model.freeze_backbone and checkpoint is None and not config.training.resume:
+        raise ValueError(
+            f"{model_name} cannot train with a randomly initialized frozen backbone; "
+            "set model.checkpoint or --checkpoint"
+        )
+    if checkpoint is not None and not checkpoint.is_file():
+        raise FileNotFoundError(f"Segmentation checkpoint does not exist: {checkpoint}")
 
 
 
@@ -303,9 +331,18 @@ def _scheduler(optimizer, epochs: int, warmup_epochs: int):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, schedule)
 
 
+def _topology_scale(epoch: int, start_epoch: int, ramp_epochs: int) -> float:
+    if epoch < start_epoch:
+        return 0.0
+    if ramp_epochs <= 0:
+        return 1.0
+    return min((epoch - start_epoch + 1) / ramp_epochs, 1.0)
+
+
 def main() -> None:
     args = parse_args()
     config = apply_cli_overrides(load_config(args.config), args)
+    _validate_training_config(config)
 
     _seed_everything(config.training.seed)
     device = _device(config.training.device)
@@ -358,6 +395,8 @@ def main() -> None:
     )
     scaler = GradScaler(device.type, enabled=config.training.amp and device.type == "cuda")
     start_epoch, best_mre = 1, float("inf")
+    best_order_key = (float("inf"), float("inf"), float("inf"))
+    best_order_metrics: dict[str, float] = {}
 
     if config.training.resume:
         checkpoint = torch.load(
@@ -369,9 +408,22 @@ def main() -> None:
             scheduler.load_state_dict(checkpoint["scheduler"])
         start_epoch = int(checkpoint["epoch"]) + 1
         best_mre = float(checkpoint.get("best_metric", best_mre))
+        tracking = checkpoint.get("tracking", {})
+        stored_order_key = tracking.get("best_order_key")
+        if isinstance(stored_order_key, (list, tuple)) and len(stored_order_key) == 3:
+            best_order_key = tuple(float(value) for value in stored_order_key)
+        stored_order_metrics = tracking.get("best_order_metrics")
+        if isinstance(stored_order_metrics, dict):
+            best_order_metrics = stored_order_metrics
 
     plotter = TrainingPlotter(run_dir)
     for epoch in range(start_epoch, config.training.epochs + 1):
+        topology_scale = _topology_scale(
+            epoch,
+            config.training.topology_start_epoch,
+            config.training.topology_ramp_epochs,
+        )
+        criterion.set_topology_scale(topology_scale)
         phase = _phase(
             model,
             epoch,
@@ -397,11 +449,23 @@ def main() -> None:
             "train_loss": train_losses["loss"],
             "val_loss": val_losses["loss"],
             "coarse_loss": val_losses["coarse_loss"],
+            "coarse_heatmap_loss": val_losses["coarse_heatmap_loss"],
             "coordinate_loss": val_losses["coordinate_loss"],
             "heatmap_loss": val_losses["heatmap_loss"],
+            "topology_loss": val_losses["topology_loss"],
+            "topology_edge_loss": val_losses["topology_edge_loss"],
+            "topology_curvature_loss": val_losses["topology_curvature_loss"],
+            "topology_duplicate_loss": val_losses["topology_duplicate_loss"],
+            "topology_scale": topology_scale,
             "val_mre": metrics["mre"],
             "val_pck4": metrics["pck4"],
             "val_pck8": metrics["pck8"],
+            "val_order_inversion_rate": metrics["order_inversion_rate"],
+            "val_adjacent_duplicate_rate": metrics["adjacent_duplicate_rate"],
+            "val_edge_length_relative_error": metrics[
+                "edge_length_relative_error"
+            ],
+            "val_direction_error_degrees": metrics["direction_error_degrees"],
             "learning_rate": optimizer.param_groups[0]["lr"],
         }
         if "contour_oracle_loss" in val_losses:
@@ -420,16 +484,48 @@ def main() -> None:
                 config.training.plot_samples,
             )
         logging.info(
-            "epoch=%d phase=%s train=%.5f val=%.5f mre=%.3f pck4=%.4f",
+            "epoch=%d phase=%s train=%.5f val=%.5f mre=%.3f pck4=%.4f "
+            "inversion=%.4f duplicate=%.4f topology_scale=%.2f",
             epoch,
             phase,
             train_losses["loss"],
             val_losses["loss"],
             metrics["mre"],
             metrics["pck4"],
+            metrics["order_inversion_rate"],
+            metrics["adjacent_duplicate_rate"],
+            topology_scale,
         )
-        if metrics["mre"] < best_mre:
+        is_best_mre = metrics["mre"] < best_mre
+        if is_best_mre:
             best_mre = metrics["mre"]
+        order_key = (
+            metrics["order_inversion_rate"],
+            metrics["adjacent_duplicate_rate"],
+            metrics["mre"],
+        )
+        if all(math.isfinite(value) for value in order_key) and order_key < best_order_key:
+            best_order_key = order_key
+            best_order_metrics = {
+                "order_inversion_rate": order_key[0],
+                "adjacent_duplicate_rate": order_key[1],
+                "mre": order_key[2],
+                "epoch": epoch,
+            }
+            save_checkpoint(
+                run_dir / "checkpoints" / "best_order.pt",
+                model,
+                optimizer,
+                scheduler,
+                epoch,
+                best_mre,
+                config.to_dict(),
+                {
+                    "best_order_key": best_order_key,
+                    "best_order_metrics": best_order_metrics,
+                },
+            )
+        if is_best_mre:
             save_checkpoint(
                 run_dir / "checkpoints" / "best.pt",
                 model,
@@ -438,6 +534,10 @@ def main() -> None:
                 epoch,
                 best_mre,
                 config.to_dict(),
+                {
+                    "best_order_key": best_order_key,
+                    "best_order_metrics": best_order_metrics,
+                },
             )
         if epoch % config.training.save_every == 0 or epoch == config.training.epochs:
             save_checkpoint(
@@ -448,9 +548,17 @@ def main() -> None:
                 epoch,
                 best_mre,
                 config.to_dict(),
+                {
+                    "best_order_key": best_order_key,
+                    "best_order_metrics": best_order_metrics,
+                },
             )
     (run_dir / "result.json").write_text(
-        json.dumps({"best_mre": best_mre}, indent=2), encoding="utf-8"
+        json.dumps(
+            {"best_mre": best_mre, "best_order": best_order_metrics},
+            indent=2,
+        ),
+        encoding="utf-8",
     )
 
 

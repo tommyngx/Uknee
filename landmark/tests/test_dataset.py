@@ -11,6 +11,10 @@ from landmark.data.yolo_pose import (
 
 
 class DatasetTests(unittest.TestCase):
+    def test_missing_label_fails_instead_of_becoming_all_invisible(self):
+        with self.assertRaises(FileNotFoundError):
+            parse_yolo_pose_label(Path("/definitely/missing/label.txt"))
+
     def test_generated_split_keeps_flip_and_bilateral_case_together(self):
         config = DataConfig(
             yaml_path="Ref/yolo_mesko4GF2/data.yaml",

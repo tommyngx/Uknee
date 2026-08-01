@@ -17,6 +17,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from landmark.models.metadata import LANDMARK_PATH_RANGES
+
 
 class TrainingPlotter:
     """Persist CSV history, metric plots and qualitative overlays per epoch."""
@@ -39,7 +41,15 @@ class TrainingPlotter:
 
         epoch = [row["epoch"] for row in self.history]
         figure, axes = plt.subplots(1, 2, figsize=(11, 4))
-        for key in ("train_loss", "val_loss", "coarse_loss", "coordinate_loss", "heatmap_loss"):
+        for key in (
+            "train_loss",
+            "val_loss",
+            "coarse_loss",
+            "coarse_heatmap_loss",
+            "coordinate_loss",
+            "heatmap_loss",
+            "topology_loss",
+        ):
             if any(key in row for row in self.history):
                 axes[0].plot(epoch, [row.get(key, np.nan) for row in self.history], label=key)
         axes[0].set_title("Loss by epoch")
@@ -50,6 +60,8 @@ class TrainingPlotter:
             "val_pck4",
             "val_pck8",
             "contour_oracle_px",
+            "val_order_inversion_rate",
+            "val_adjacent_duplicate_rate",
             "learning_rate",
         ):
             if any(key in row for row in self.history):
@@ -81,6 +93,26 @@ class TrainingPlotter:
             truth = target[index].detach().cpu().numpy()
             axis = axes[0, index]
             axis.imshow(image, cmap="gray")
+            for start, stop in LANDMARK_PATH_RANGES:
+                path_mask = mask[start:stop]
+                if path_mask.sum() < 2:
+                    continue
+                truth_path = truth[start:stop][path_mask]
+                predicted_path = pred[start:stop][path_mask]
+                axis.plot(
+                    truth_path[:, 0] * (width - 1),
+                    truth_path[:, 1] * (height - 1),
+                    color="lime",
+                    linewidth=0.8,
+                    alpha=0.7,
+                )
+                axis.plot(
+                    predicted_path[:, 0] * (width - 1),
+                    predicted_path[:, 1] * (height - 1),
+                    color="red",
+                    linewidth=0.8,
+                    alpha=0.7,
+                )
             axis.scatter(truth[mask, 0] * (width - 1), truth[mask, 1] * (height - 1), s=7, c="lime", label="GT")
             axis.scatter(pred[mask, 0] * (width - 1), pred[mask, 1] * (height - 1), s=7, c="red", label="Pred")
             axis.axis("off")

@@ -33,21 +33,22 @@ model:
   local_patch_size: 24
   token_patch_size: 3
   freeze_backbone: true
-  # Pass the 11-class segmentation checkpoint with --checkpoint.
-  checkpoint: ""
+  checkpoint: Ref/checkpoint_last.pth
   strict_checkpoint: true
 
 loss:
   coarse_weight: 1.0
+  coarse_heatmap_weight: 1.0
   coordinate_weight: 1.0
   heatmap_weight: 1.0
   bone_constraint_weight: 0.05
   heatmap_sigma: 1.0
+  heatmap_temperature: 1.0
 
 training:
   experiment_name: adaptive_rwkv_landmark
   output_dir: landmark/runs
-  epochs: 1000
+  epochs: 120
   batch_size: 8
   learning_rate: 0.0001
   weight_decay: 0.0001
