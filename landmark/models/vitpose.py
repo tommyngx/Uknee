@@ -1,92 +1,99 @@
-from __future__ import annotations
+"""ViTPose-S full-frame heatmap baseline."""
 
-import math
+from __future__ import annotations
 
 import torch
 from torch import nn
-
-from .heatmap_baseline import decode_global_heatmaps
-
-
-def _sincos_position_2d(
-    height: int,
-    width: int,
-    channels: int,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> torch.Tensor:
-    """Return deterministic 2D absolute positions in raster token order."""
-    frequencies_per_axis = max(math.ceil(channels / 4), 1)
-    frequencies = torch.arange(
-        frequencies_per_axis, dtype=torch.float32, device=device
-    )
-    frequencies = torch.exp(
-        -math.log(10_000.0)
-        * frequencies
-        / max(frequencies_per_axis - 1, 1)
-    )
-    ys = torch.linspace(0, 1, height, dtype=torch.float32, device=device)
-    xs = torch.linspace(0, 1, width, dtype=torch.float32, device=device)
-    yy, xx = torch.meshgrid(ys, xs, indexing="ij")
-    x_angles = xx[..., None] * frequencies
-    y_angles = yy[..., None] * frequencies
-    encoding = torch.cat(
-        (x_angles.sin(), x_angles.cos(), y_angles.sin(), y_angles.cos()),
-        dim=-1,
-    )[..., :channels]
-    return encoding.reshape(1, height * width, channels).to(dtype=dtype)
+from torch.nn import functional as F
 
 
-class ViTPoseLandmarkBaseline(nn.Module):
-    """Compact ViTPose-style baseline with a transformer and deconvolution head."""
+class MLP(nn.Module):
+    def __init__(self, channels: int, ratio: int = 4, dropout: float = 0.0):
+        super().__init__()
+        hidden = channels * ratio
+        self.layers = nn.Sequential(
+            nn.Linear(channels, hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, channels),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.layers(x)
+
+
+class TransformerBlock(nn.Module):
+    def __init__(self, channels: int, heads: int, mlp_ratio: int = 4, dropout: float = 0.0):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(channels)
+        self.attention = nn.MultiheadAttention(channels, heads, dropout=dropout, batch_first=True)
+        self.norm2 = nn.LayerNorm(channels)
+        self.mlp = MLP(channels, mlp_ratio, dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        normalized = self.norm1(x)
+        x = x + self.attention(normalized, normalized, normalized, need_weights=False)[0]
+        return x + self.mlp(self.norm2(x))
+
+
+class ViTPoseS(nn.Module):
+    """Small ViTPose encoder (384/12/6) with a deconvolution heatmap head."""
 
     def __init__(
         self,
-        input_channels: int = 1,
+        input_channels: int = 3,
         num_landmarks: int = 129,
-        embed_dim: int = 192,
+        image_size: int = 640,
         patch_size: int = 16,
-        depth: int = 6,
+        embed_dim: int = 384,
+        depth: int = 12,
         attention_heads: int = 6,
+        mlp_ratio: int = 4,
+        dropout: float = 0.0,
     ):
         super().__init__()
-        self.patch_embed = nn.Conv2d(
-            input_channels, embed_dim, kernel_size=patch_size, stride=patch_size
-        )
-        layer = nn.TransformerEncoderLayer(
-            embed_dim,
-            attention_heads,
-            embed_dim * 4,
-            dropout=0.1,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.transformer = nn.TransformerEncoder(
-            layer, depth, enable_nested_tensor=False
+        self.patch_size = patch_size
+        self.patch_embed = nn.Conv2d(input_channels, embed_dim, patch_size, patch_size)
+        grid = max(image_size // patch_size, 1)
+        self.position = nn.Parameter(torch.zeros(1, embed_dim, grid, grid))
+        self.blocks = nn.ModuleList(
+            TransformerBlock(embed_dim, attention_heads, mlp_ratio, dropout) for _ in range(depth)
         )
         self.norm = nn.LayerNorm(embed_dim)
         self.heatmap_head = nn.Sequential(
-            nn.ConvTranspose2d(embed_dim, embed_dim, 4, stride=2, padding=1),
-            nn.BatchNorm2d(embed_dim),
-            nn.GELU(),
-            nn.ConvTranspose2d(embed_dim, embed_dim // 2, 4, stride=2, padding=1),
-            nn.BatchNorm2d(embed_dim // 2),
-            nn.GELU(),
-            nn.Conv2d(embed_dim // 2, num_landmarks, 1),
+            nn.ConvTranspose2d(embed_dim, 256, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(256, 256, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, num_landmarks, 1),
         )
+        nn.init.trunc_normal_(self.position, std=0.02)
+        self.apply(self._initialize)
 
-    def forward(self, image, **_):
+    @staticmethod
+    def _initialize(module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            nn.init.trunc_normal_(module.weight, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
         features = self.patch_embed(image)
         batch, channels, height, width = features.shape
-        tokens = features.flatten(2).transpose(1, 2)
-        tokens = tokens + _sincos_position_2d(
-            height,
-            width,
-            channels,
-            tokens.dtype,
-            tokens.device,
-        )
-        tokens = self.norm(self.transformer(tokens))
-        features = tokens.transpose(1, 2).reshape(batch, channels, height, width)
-        return decode_global_heatmaps(self.heatmap_head(features))
+        position = F.interpolate(self.position, (height, width), mode="bicubic", align_corners=False)
+        tokens = (features + position).flatten(2).transpose(1, 2)
+        for block in self.blocks:
+            tokens = block(tokens)
+        features = self.norm(tokens).transpose(1, 2).reshape(batch, channels, height, width)
+        return self.heatmap_head(features)
+
+
+ViTPoseLandmarkBaseline = ViTPoseS
+
+__all__ = ["ViTPoseS", "ViTPoseLandmarkBaseline"]

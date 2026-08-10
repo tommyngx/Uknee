@@ -1,19 +1,15 @@
-# Agent Guide
+# Landmark maintenance invariants
 
-When updating this package:
-
-1. Preserve `(x, y)` coordinate order and `[0, 1]` model coordinates.
-2. Preserve the class-derived landmark mapping 45/51/24/9. Do not infer a
-   different mapping from point indices.
-3. Do not modify the default output of the existing RWKV U-Net.
-4. Do not use forward hooks in the deployable adapter.
-5. Do not update frozen backbone BatchNorm statistics.
-6. Mask every coordinate and heatmap loss by `landmark_visibility`.
-7. Do not enable horizontal flips without a verified identity remap.
-8. Add a YAML file and registry entry for each new model baseline.
-9. Run `python -m unittest discover -s landmark/tests -v` after changes.
-10. Run a small 8–16 image overfit experiment before full training.
-
-`bone_class_groups` refers to the eleven-class segmentation checkpoint, not
-the four YOLO-Pose class IDs. The default uses
-`[[1,6,7], [2,4,8,9,10], [3,4], [5]]` from the bundled metadata.
+1. Import `landmark` before any absolute `ultralytics` import and keep runtime
+   pinned to `landmark/_vendor/ultralytics` version 8.4.87.
+2. Preserve class order femur/tibia/fibula/patella, padded shape `[51,3]` and
+   actual counts `45/51/24/9`.
+3. Never connect neighbour/curve losses across the six path ranges in
+   `landmark.data.schema.LANDMARK_PATH_RANGES`.
+4. Keep multi-image augmentation disabled for V1, V9, HRNet and ViTPose unless
+   their target representation is redesigned for multiple instances/class.
+5. Do not replace ROIAlign during V9 training or ordinary inference.
+6. Keep upstream mAP fitness for `best.pt`; use MRE only for `best_mre.pt`.
+7. Preserve standard YOLO `Results`, checkpoint and CLI semantics.
+8. Run `python -m unittest discover -s landmark/tests -v` after changes and a
+   real 8–16 image overfit plus two-process DDP smoke before paper experiments.

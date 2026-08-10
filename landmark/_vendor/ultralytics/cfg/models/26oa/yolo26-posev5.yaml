@@ -1,0 +1,43 @@
+# Ultralytics AGPL-3.0 License - https://ultralytics.com/license
+
+# YOLO26 OA pose v5: pretrained ConvNeXtV2-Nano backbone + original YOLO26 Pose26 head.
+# This experiment isolates a modern CNN backbone for dense 129-point knee landmark detection.
+
+nc: 1
+end2end: True
+reg_max: 1
+kpt_shape: [129, 3]
+scale: n # fixed ConvNeXtV2-Nano experiment; keeps C3k2 parser behavior stable without compound scaling
+
+backbone:
+  # ConvNeXtV2N returns [P2, P3, P4, P5].
+  # P2 stride 4, P3 stride 8, P4 stride 16, P5 stride 32.
+  - [-1, 1, ConvNeXtV2N, [True, [128, 256, 512, 512]]] # 0
+  - [0, 1, Index, [128, 0]] # 1-P2/4
+  - [0, 1, Index, [256, 1]] # 2-P3/8
+  - [0, 1, Index, [512, 2]] # 3-P4/16
+  - [0, 1, Index, [512, 3]] # 4-P5/32
+
+head:
+  # YOLO26-style FPN/PAN neck with an added P2 path for fine landmarks.
+  - [-1, 1, SPPF, [512, 5, 3, True]] # 5-P5/32
+  - [-1, 2, C2PSA, [512]] # 6-P5/32
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 3], 1, Concat, [1]]
+  - [-1, 2, C3k2, [512, True]] # 9-P4/16
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 2], 1, Concat, [1]]
+  - [-1, 2, C3k2, [256, True]] # 12-P3/8
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 1], 1, Concat, [1]]
+  - [-1, 2, C3k2, [128, True]] # 15-P2/4
+  - [-1, 1, Conv, [128, 3, 2]]
+  - [[-1, 12], 1, Concat, [1]]
+  - [-1, 2, C3k2, [256, True]] # 18-P3/8
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [[-1, 9], 1, Concat, [1]]
+  - [-1, 2, C3k2, [512, True]] # 21-P4/16
+  - [-1, 1, Conv, [512, 3, 2]]
+  - [[-1, 6], 1, Concat, [1]]
+  - [-1, 1, C3k2, [512, True, 0.5, True]] # 24-P5/32
+  - [[15, 18, 21, 24], 1, Pose26, [nc, kpt_shape]] # Pose26(P2, P3, P4, P5)

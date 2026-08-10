@@ -1,6 +1,11 @@
-"""Landmark localisation package for the Uknee repository."""
+"""Standalone knee pose training built on a pinned Ultralytics backend."""
 
-from .config.loader import ExperimentConfig, load_config
-from .models.registry import build_model
+from ._vendor.bootstrap import load_vendored_ultralytics
 
-__all__ = ["ExperimentConfig", "build_model", "load_config"]
+# This must happen before importing modules that use absolute ``ultralytics``
+# imports. It also makes accidental use of a pip installation fail loudly.
+load_vendored_ultralytics()
+
+from .utils.api import KneePose
+
+__all__ = ["KneePose", "load_vendored_ultralytics"]

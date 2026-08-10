@@ -39,7 +39,7 @@
 </div>
 <br>
 
-  [![project](https://img.shields.io/badge/project-ubench-brightgreen)](https://fenghetan9.github.io/ubench)    [![arXiv](https://img.shields.io/badge/arxiv-2510.07041-b31b1b)](https://arxiv.org/pdf/2510.07041)   [![github](https://img.shields.io/badge/github-U--Bench-black)](https://github.com/FengheTan9/U-Bench)  [![huggingface](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-U--Bench--Data-yellow)](https://huggingface.co/datasets/FengheTan9/U-Bench)  [![huggingface](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-U--Bench--Code-yellow)](https://huggingface.co/FengheTan9/U-Bench)   <a href="#LICENSE--citation"><img alt="License: Apache2.0" src="https://img.shields.io/badge/LICENSE-Apache%202.0-blue.svg"/></a>
+  [![project](https://img.shields.io/badge/project-ubench-brightgreen)](https://fenghetan9.github.io/ubench)    [![arXiv](https://img.shields.io/badge/arxiv-2510.07041-b31b1b)](https://arxiv.org/pdf/2510.07041)   [![github](https://img.shields.io/badge/github-U--Bench-black)](https://github.com/FengheTan9/U-Bench)  [![huggingface](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-U--Bench--Data-yellow)](https://huggingface.co/datasets/FengheTan9/U-Bench)  [![huggingface](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-U--Bench--Code-yellow)](https://huggingface.co/FengheTan9/U-Bench)   <a href="#license"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/LICENSE-AGPL--3.0-blue.svg"/></a>
 
 
 
@@ -217,6 +217,13 @@ Please refer [U-Score calculator](https://fenghetan9.github.io/ubench)
 ![Teaser](imgs/iou.jpg)
 
 ![Teaser](imgs/uscore.jpg)
+
+## License
+
+This combined repository is distributed under the GNU AGPL-3.0 license in
+`LICENSE`. The historical Apache-2.0 text is retained in
+`LICENSE-APACHE-2.0`; third-party attribution is documented in
+`THIRD_PARTY_NOTICES.md`.
 
 ## Citation
 

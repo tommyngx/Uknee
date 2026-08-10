@@ -1,4 +1,48 @@
+# Reference directory
 Ref/
-.DS_Store
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
+**/__pycache__/
 *.py[cod]
+**/*.py[cod]
+*$py.class
+
+# Caches & Environment
+.cache/
+**/.cache/
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.matplotlib/
+wandb/
+
+# OS generated files
+.DS_Store
+**/.DS_Store
+.DS_Store?
+._*
+**./_*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Landmark & Training Caches / Outputs
+landmark/.cache/
+landmark/runs/
+runs/
+*.log
+
+# Checkpoints and Heavy Binaries
+*.pt
+*.pth
+*.onnx
+*.engine

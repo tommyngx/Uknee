@@ -1,0 +1,44 @@
+# Uknee pose overrides applied on top of the vendored Ultralytics defaults.
+task: pose
+mode: train
+epochs: 100
+patience: 100
+batch: 16
+imgsz: 640
+workers: 8
+project: landmark/runs/pose
+name: train
+seed: 2006
+deterministic: true
+optimizer: auto
+amp: true
+close_mosaic: 10
+cache: false
+plots: true
+save: true
+val: true
+
+# Keep upstream pose loss defaults explicit in the resolved experiment file.
+box: 7.5
+cls: 0.5
+dfl: 1.5
+pose: 12.0
+kobj: 1.0
+rle: 1.0
+
+# Upstream YOLO augmentation defaults. Models with a single-instance
+# auxiliary/refinement target are validated with mosaic/mixup/cutmix disabled.
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.4
+degrees: 0.0
+translate: 0.1
+scale: 0.5
+shear: 0.0
+perspective: 0.0
+flipud: 0.0
+fliplr: 0.5
+mosaic: 1.0
+mixup: 0.0
+cutmix: 0.0
+
