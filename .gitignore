@@ -46,3 +46,6 @@ runs/
 *.pth
 *.onnx
 *.engine
+
+# This pretrained asset was tracked before the segment package move.
+!segment/models/Hybrid/BEFUnet/table5_pidinet-small.pth

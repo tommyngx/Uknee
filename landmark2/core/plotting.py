@@ -1172,7 +1172,7 @@ import matplotlib.pyplot as plt
 from landmark2.data.schema import LANDMARK_PATH_RANGES, REGION_NAMES
 
 
-COLORS = ("#2563eb", "#dc2626", "#16a34a", "#9333ea")
+COLORS = ("#00b4ff", "#ea580c", "#ff78dc", "#16a34a")
 
 
 def _style(ax) -> None:
@@ -1203,7 +1203,6 @@ def plot_dashboard_pose(
     model_name: str | None = None,
     elapsed_seconds: float | None = None,
 ) -> Path | None:
-    """Write the fixed 2x2 epoch dashboard with balanced marker sizes, vibrant colors, and seaborn darkgrid style."""
     csv_path = Path(csv_file)
     if not csv_path.exists():
         return None
@@ -1211,7 +1210,7 @@ def plot_dashboard_pose(
     if not values:
         return None
     epochs = values.get("epoch", np.arange(1, len(next(iter(values.values()))) + 1))
-    destination = Path(output_png) if output_png else csv_path.parent / "dashboard_pose.png"
+    destination = Path(output_png) if output_png else csv_path.parent / "landmark2_dashboard.png"
 
     plt.style.use("seaborn-v0_8-darkgrid" if "seaborn-v0_8-darkgrid" in plt.style.available else "default")
     fig, axes = plt.subplots(2, 2, figsize=(14, 9), dpi=150)
@@ -1238,7 +1237,7 @@ def plot_dashboard_pose(
         avg_ep = elapsed_seconds / max(1, len(epochs))
         time_info = f" | Train Time: {mins}m {secs}s ({avg_ep:.1f}s/ep)"
 
-    fig.suptitle(f"Landmark Pose: {m_name}{time_info}", color="#1e293b", fontsize=14, fontweight="bold", y=0.98)
+    fig.suptitle(f"Landmark: {m_name}{time_info}", color="#1e293b", fontsize=14, fontweight="bold", y=0.98)
 
     # Subplot 1: Train & Val Loss + Top 1, 2, 3 Val Loss Markers
     ax1 = axes[0, 0]
@@ -1488,42 +1487,55 @@ def plot_pose_metrics(metrics: Any, output_png: str | Path) -> Path:
     return destination
 
 
-def plot_validation_samples(records: list[dict[str, Any]], output_png: str | Path) -> Path | None:
-    """Render four validation images side-by-side in one row (1x4 grid)."""
+def plot_validation_samples(records: list[dict[str, Any]], output_png: str | Path, epoch: int | float = 150) -> Path | None:
+    """Render four validation images in a 2x2 grid (2 top, 2 bottom) preserving aspect ratio."""
     if not records:
         return None
     destination = Path(output_png)
-    fig, axes = plt.subplots(1, 4, figsize=(20, 5.5), dpi=150)
-    axes_list = list(axes) if isinstance(axes, np.ndarray) else [axes]
+    fig, axes = plt.subplots(2, 2, figsize=(11, 11), dpi=150)
+    axes_list = list(axes.flat)
+    neon_green = "#39ff14"  # Vibrant neon green for keypoint scatter markers
+
     for ax, record in zip(axes_list, records[:4]):
         image = record["image"]
-        ax.imshow(image, cmap="gray" if image.ndim == 2 else None)
+        ax.imshow(image, cmap="gray" if image.ndim == 2 else None, aspect="equal")
         pred, valid = record["pred"], record["valid"]
         offset = 0
         for color, name, count in zip(COLORS, REGION_NAMES, (45, 51, 24, 9)):
             local = pred[offset : offset + count]
             local_valid = valid[offset : offset + count] & np.isfinite(local).all(axis=1)
-            ax.scatter(local[local_valid, 0], local[local_valid, 1], s=7, color=color, label=name.title())
+            # Solid neon green points without outer black border
+            ax.scatter(local[local_valid, 0], local[local_valid, 1], s=10, color=neon_green, edgecolors="none", zorder=5)
             offset += count
         for start, stop in LANDMARK_PATH_RANGES:
             path = pred[start:stop]
             mask = valid[start:stop] & np.isfinite(path).all(axis=1)
             if mask.sum() >= 2:
-                ax.plot(path[mask, 0], path[mask, 1], color="#fde047", linewidth=0.8)
+                path_color = COLORS[0] if stop <= 45 else (COLORS[1] if stop <= 96 else (COLORS[2] if stop <= 120 else COLORS[3]))
+                # Clean colored region path line without black stroke outline underneath
+                ax.plot(path[mask, 0], path[mask, 1], color=path_color, linewidth=1.1, zorder=4)
         banner = (
             f"MRE {record['mre_px'] * 0.10:.3f} mm | PCK {record['pck2'] * 100:.1f}%\n"
             f"HD95 {record['hd95_px'] * 0.10:.3f} mm | IoU {record['box_iou'] * 100:.1f}%"
         )
         ax.text(0.01, 0.99, banner, transform=ax.transAxes, va="top", ha="left", color="white", fontsize=7.5,
-                bbox={"facecolor": "black", "alpha": 0.72, "pad": 3})
-        ax.set_title(Path(record["path"]).name, fontsize=9)
+                bbox={"facecolor": "black", "alpha": 0.75, "pad": 3.5, "edgecolor": "#334155", "linewidth": 0.8})
+        ax.set_title(Path(record["path"]).name, fontsize=9.5, fontweight="bold", color="#1e293b", pad=6)
         ax.axis("off")
     for ax in axes_list[len(records[:4]) :]:
         ax.axis("off")
-    handles, labels = axes_list[0].get_legend_handles_labels()
-    if handles:
-        fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=8.5)
-    fig.tight_layout(rect=(0, 0.05, 1, 1))
+
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        Line2D([0], [0], color=COLORS[0], lw=2.0, label="Femur Path"),
+        Line2D([0], [0], color=COLORS[1], lw=2.0, label="Tibia Path"),
+        Line2D([0], [0], color=COLORS[2], lw=2.0, label="Fibula Path"),
+        Line2D([0], [0], color=COLORS[3], lw=2.0, label="Patella Path"),
+        Line2D([0], [0], color=neon_green, marker="o", markersize=6, linestyle="None", label="Keypoints"),
+    ]
+    fig.legend(handles=legend_handles, loc="lower center", ncol=5, fontsize=9.5, frameon=True, facecolor="white", edgecolor="#94a3b8")
+    fig.suptitle(f"Validation Landmark Predictions — Epoch {int(epoch)}", fontsize=13.5, fontweight="bold", color="#1e293b", ha="center", y=0.955)
+    fig.tight_layout(rect=(0, 0.055, 1, 0.945))
     destination.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(destination, bbox_inches="tight")
     plt.close(fig)
