@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import random
 import shutil
+import time
 from copy import copy
 from pathlib import Path
 from typing import Any
@@ -14,8 +15,9 @@ import torch
 import torch.distributed as dist
 
 from landmark2.core.pose import PoseTrainer, PoseValidator
-from landmark2.core import LOGGER, RANK, ops
+from landmark2.core import LOGGER, RANK, YAML, ops
 from landmark2.core.metrics import PoseMetrics
+from landmark2.core.torch_utils import get_flops, get_num_gradients, get_num_params
 
 from landmark2.data.schema import LANDMARK_PATH_RANGES, REGION_KEYPOINT_COUNTS, REGION_NAMES
 from landmark2.core.plotting import plot_dashboard_pose, plot_pose_metrics, plot_validation_samples
@@ -51,6 +53,21 @@ def _sum_losses(metrics: dict[str, Any], prefix: str) -> float:
     return float(sum(finite)) if finite else float("nan")
 
 
+def _clean_scalar(value: Any) -> Any:
+    """Convert scalar-like values to portable YAML values, replacing NaN with null."""
+    if isinstance(value, (torch.Tensor, np.generic)):
+        value = value.item()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
+
+
+def _metric_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: _clean_scalar(value) for key, value in row.items()}
+
+
 class FlatPoseTrainerMixin:
     """Keep checkpoints in the run root and select best.pt by minimum MRE."""
 
@@ -61,6 +78,16 @@ class FlatPoseTrainerMixin:
         self.last = self.save_dir / "last.pt"
         self.best = self.save_dir / "best.pt"
         self.save_period = self.args.save_period = -1
+        self.args.val = True  # fixed validation samples are required after every epoch
+        self._prior_training_duration_seconds = 0.0
+        if self.args.resume and (self.save_dir / "summary.yaml").is_file():
+            try:
+                previous = YAML.load(self.save_dir / "summary.yaml") or {}
+                self._prior_training_duration_seconds = float(
+                    previous.get("training", {}).get("duration_seconds", 0.0) or 0.0
+                )
+            except (AttributeError, TypeError, ValueError):
+                pass
         if RANK in {-1, 0}:
             self.callbacks["on_fit_epoch_end"] = [
                 callback
@@ -83,8 +110,15 @@ class FlatPoseTrainerMixin:
             for stale_dir in (self.save_dir / "labels", self.save_dir / "visualizations"):
                 if stale_dir.exists():
                     shutil.rmtree(stale_dir)
-            if old_weights.exists() and not self.args.resume:
+            if old_weights.exists() and (not self.args.resume or not any(old_weights.iterdir())):
+                # BaseTrainer creates this directory before the flat layout is applied.
+                # Preserve only a non-empty legacy resume directory.
                 shutil.rmtree(old_weights)
+            if not self.args.resume:
+                samples_dir = self.save_dir / "samples"
+                for pattern in ("val_samples_e*.png", "landmark_sample_e*.png"):
+                    for artifact in samples_dir.glob(pattern):
+                        artifact.unlink()
 
     def validate(self):
         previous_best = self.best_fitness
@@ -117,6 +151,96 @@ class FlatPoseTrainerMixin:
                 writer.writeheader()
             writer.writerow(row)
         plot_dashboard_pose(self.csv, self.save_dir / "dashboard_pose.png", pixel_spacing=PIXEL_SPACING_MM)
+
+    def _write_summary(self) -> Path:
+        rows: list[dict[str, Any]] = []
+        if self.csv.is_file():
+            with self.csv.open(newline="", encoding="utf-8") as stream:
+                for raw in csv.DictReader(stream):
+                    row = {"epoch": int(float(raw["epoch"]))}
+                    row.update({key: _to_float(value) for key, value in raw.items() if key != "epoch"})
+                    rows.append(row)
+        finite_rows = [row for row in rows if np.isfinite(_to_float(row.get("metrics/MRE")))]
+        best_row = min(finite_rows, key=lambda row: row["metrics/MRE"]) if finite_rows else {}
+        final_row = rows[-1] if rows else {}
+        final_validation = {
+            key: _clean_scalar(value)
+            for key, value in (self.metrics or {}).items()
+            if key in MEDICAL_KEYS or key.startswith("metrics/mAP")
+        }
+        imgsz = getattr(self.args, "imgsz", 640)
+        image_hw = list(imgsz) if isinstance(imgsz, (list, tuple)) else [imgsz, imgsz]
+        gflops = float(get_flops(self.model, imgsz=imgsz))
+        duration = getattr(self, "_training_duration_seconds", None)
+        if duration is None:
+            duration = max(time.time() - getattr(self, "train_time_start", time.time()), 0.0)
+        model_source = str(getattr(self.args, "model", type(self.model).__name__))
+        optimizer = getattr(self, "optimizer", None)
+        sample_paths = getattr(getattr(self, "validator", None), "_sample_paths", ())
+        validator_speed = getattr(getattr(self, "validator", None), "speed", {}) or {}
+        summary = {
+            "schema_version": 1,
+            "task": "landmark_detection",
+            "model": {
+                "name": Path(model_source).stem,
+                "source": model_source,
+                "parameters": int(get_num_params(self.model)),
+                "trainable_parameters": int(get_num_gradients(self.model)),
+                "gflops": round(gflops, 4) if gflops > 0 else None,
+                "gflops_convention": "2 x MACs for one forward pass",
+                "input_shape": [1, 3, int(image_hw[0]), int(image_hw[1])],
+            },
+            "dataset": {
+                "config": _clean_scalar(getattr(self.args, "data", None)),
+                "pixel_spacing_mm": PIXEL_SPACING_MM,
+            },
+            "training": {
+                "epochs_requested": int(getattr(self.args, "epochs", len(rows))),
+                "epochs_completed": int(final_row.get("epoch", 0)),
+                "batch_size": int(getattr(self.args, "batch", 0)),
+                "seed": int(getattr(self.args, "seed", 0)),
+                "optimizer": type(optimizer).__name__ if optimizer is not None else str(getattr(self.args, "optimizer", "")),
+                "initial_learning_rate": _clean_scalar(getattr(self.args, "lr0", None)),
+                "duration_seconds": round(duration, 3),
+                "duration_hours": round(duration / 3600.0, 6),
+                "seconds_per_epoch": round(duration / max(len(rows), 1), 3),
+                "device": str(getattr(self, "device", "")),
+                "torch_version": str(torch.__version__),
+            },
+            "performance": {
+                "selection_metric": "metrics/MRE",
+                "selection_mode": "min",
+                "best_epoch": int(best_row.get("epoch", 0)),
+                "best": _metric_row(best_row),
+                "final": _metric_row(final_row),
+                "best_checkpoint_validation": final_validation,
+                "distance_unit_in_metrics": "pixel",
+                "pixel_spacing_mm": PIXEL_SPACING_MM,
+                "pck_thresholds_pixels": [2, 4, 8],
+                "pck_thresholds_mm": [0.2, 0.4, 0.8],
+                "inference_ms_per_image": _clean_scalar(validator_speed.get("inference")),
+            },
+            "artifacts": {
+                "best_checkpoint": "best.pt",
+                "last_checkpoint": "last.pt",
+                "metrics": "results.csv",
+                "samples": "samples/landmark_sample_e{epoch}.png",
+                "samples_per_epoch": len(sample_paths) if sample_paths else 4,
+                "sample_seed": 2006,
+                "sample_paths": list(sample_paths),
+            },
+        }
+        path = self.save_dir / "summary.yaml"
+        YAML.save(path, summary)
+        return path
+
+    def final_eval(self):
+        self._training_duration_seconds = self._prior_training_duration_seconds + max(
+            time.time() - getattr(self, "train_time_start", time.time()), 0.0
+        )
+        super().final_eval()
+        if RANK in {-1, 0}:
+            self._write_summary()
 
 
 MEDICAL_KEYS = (
@@ -348,7 +472,7 @@ class KneePoseValidator(PoseValidator):
             ordered = [self._sample_records[path] for path in self._sample_paths if path in self._sample_records]
             plot_validation_samples(
                 ordered,
-                Path(self.save_dir) / "samples" / f"val_samples_e{self.current_epoch}.png",
+                Path(self.save_dir) / "samples" / f"landmark_sample_e{self.current_epoch}.png",
             )
 
     def print_results(self) -> None:

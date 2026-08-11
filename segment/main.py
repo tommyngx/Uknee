@@ -49,7 +49,10 @@ from segment.utils.metrics_medpy import get_metrics
 from segment.utils.util import AverageMeter
 from segment.utils.training_logs import (
     EpochLogWriter,
+    load_summary_yaml,
+    model_paper_profile,
     plot_training_dashboard,
+    save_summary_yaml,
     save_training_args,
     setup_logger,
 )
@@ -130,7 +133,7 @@ def parse_arguments():
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--pretrained_path', type=str, default="", help='Path to custom pretrained weights/checkpoint (.pth)')
     parser.add_argument('--exp_name', type=str, default="", help='Optional run name; defaults to <model>_<dataset>')
-    parser.add_argument('--output_dir', type=str, default="", help='Run root; defaults to <repo>/runs/segmentation')
+    parser.add_argument('--output_dir', type=str, default="", help='Run root; defaults to <repo>/runs/segment')
     parser.add_argument('--pixel_spacing_mm', type=float, default=0.10, help='In-plane pixel spacing used by HD95/ASSD')
     parser.add_argument('--zero_shot_base_dir', type=str, default="", help='zero_base_dir')
     parser.add_argument('--zero_shot_dataset_name', type=str, default="", help='zero_shot_dataset_name')
@@ -440,7 +443,7 @@ def _safe_run_component(value):
 def init_dir(args):
     default_name = f"{_safe_run_component(args.model)}_{_safe_run_component(args.dataset_name)}"
     run_name = _safe_run_component(args.exp_name) if args.exp_name else default_name
-    output_root = Path(args.output_dir).expanduser().resolve() if args.output_dir else REPO_ROOT / "runs" / "segmentation"
+    output_root = Path(args.output_dir).expanduser().resolve() if args.output_dir else REPO_ROOT / "runs" / "segment"
     exp_save_path = output_root if output_root.name == run_name else output_root / run_name
     exp_save_path.mkdir(parents=True, exist_ok=True)
     samples_path = exp_save_path / "samples"
@@ -451,12 +454,16 @@ def init_dir(args):
     args.samples_dir = str(samples_path)
 
     if not args.resume and not args.just_for_test:
-        for filename in ("best.pt", "last.pt", "results.csv", "dashboard_segmentation.png", "segmentation_metrics.png"):
+        for filename in (
+            "best.pt", "last.pt", "results.csv", "summary.yaml",
+            "dashboard_segmentation.png", "segmentation_metrics.png",
+        ):
             artifact = exp_save_path / filename
             if artifact.is_file():
                 artifact.unlink()
-        for artifact in samples_path.glob("val_samples_e*.png"):
-            artifact.unlink()
+        for pattern in ("val_samples_e*.png", "segment_sample_e*.png", "segment_sample_eval.png"):
+            for artifact in samples_path.glob(pattern):
+                artifact.unlink()
 
     args_path = save_training_args(exp_save_path, vars(args), filename="args.yaml")
     print(f"Config saved to {args_path}")
@@ -519,7 +526,7 @@ def validate(args,logger,model):
     indices = SegmentationEvaluator.fixed_sample_indices(len(valloader.dataset), seed=2006)
     val_loss, evaluator, snapshot = _validate_epoch(args, model, valloader, criterion, indices)
     plot_segmentation_metrics(snapshot, Path(args.exp_save_dir) / "segmentation_metrics.png")
-    evaluator.save_samples(Path(args.samples_dir) / "val_samples_e0.png", epoch=0)
+    evaluator.save_samples(Path(args.samples_dir) / "segment_sample_eval.png", epoch=0)
     metrics = {
         "val/loss": val_loss,
         "val/dice": snapshot.dice,
@@ -582,6 +589,8 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     max_iterations = max(len(trainloader) * args.max_epochs, 1)
     iteration = start_epoch * len(trainloader)
     fixed_indices = SegmentationEvaluator.fixed_sample_indices(len(valloader.dataset), seed=2006)
+    previous_summary = load_summary_yaml(run_dir) if args.resume else {}
+    previous_duration = float(previous_summary.get("training", {}).get("duration_seconds", 0.0) or 0.0)
     training_started = time.time()
     best_epoch = max((int(row["epoch"]) for row in history_rows if row["val/dice"] == best_dice), default=0)
 
@@ -635,7 +644,7 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
             best_epoch = epoch_id
             _save_checkpoint(run_dir / "best.pt", args, model, optimizer, epoch_id, best_dice, epoch_row)
 
-        evaluator.save_samples(run_dir / "samples" / f"val_samples_e{epoch_id}.png", epoch_id)
+        evaluator.save_samples(run_dir / "samples" / f"segment_sample_e{epoch_id}.png", epoch_id)
         plot_segmentation_metrics(snapshot, run_dir / "segmentation_metrics.png")
         plot_training_dashboard(
             log_dir=run_dir,
@@ -661,6 +670,59 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
             snapshot.iou, snapshot.hd95, snapshot.assd, snapshot.sensitivity, snapshot.precision,
         )
 
+    elapsed_seconds = previous_duration + time.time() - training_started
+    best_row = next((row for row in history_rows if int(row["epoch"]) == best_epoch), {})
+    final_row = history_rows[-1] if history_rows else {}
+    summary = {
+        "schema_version": 1,
+        "task": "segmentation",
+        "model": {
+            "name": args.model,
+            **model_paper_profile(
+                model,
+                (1, int(args.input_channel), int(args.img_size), int(args.img_size)),
+            ),
+        },
+        "dataset": {
+            "name": args.dataset_name,
+            "train_manifest": args.train_file_dir,
+            "validation_manifest": args.val_file_dir,
+            "classes": int(args.num_classes),
+            "pixel_spacing_mm": float(args.pixel_spacing_mm),
+        },
+        "training": {
+            "epochs_requested": int(args.max_epochs),
+            "epochs_completed": int(final_row.get("epoch", start_epoch)),
+            "batch_size": int(args.batch_size),
+            "seed": int(args.seed),
+            "optimizer": optimizer_name,
+            "criterion": criterion_name,
+            "initial_learning_rate": float(base_lr),
+            "duration_seconds": round(elapsed_seconds, 3),
+            "duration_hours": round(elapsed_seconds / 3600.0, 6),
+            "seconds_per_epoch": round(elapsed_seconds / max(len(history_rows), 1), 3),
+            "device": str(device),
+            "torch_version": str(torch.__version__),
+        },
+        "performance": {
+            "selection_metric": "val/dice",
+            "selection_mode": "max",
+            "best_epoch": int(best_epoch),
+            "best": best_row,
+            "final": final_row,
+            "distance_unit": "mm",
+        },
+        "artifacts": {
+            "best_checkpoint": "best.pt",
+            "last_checkpoint": "last.pt",
+            "metrics": "results.csv",
+            "samples": "samples/segment_sample_e{epoch}.png",
+            "samples_per_epoch": min(4, len(valloader.dataset)),
+            "sample_seed": 2006,
+            "sample_indices": fixed_indices,
+        },
+    }
+    save_summary_yaml(run_dir, summary)
     logger.info("Training complete: best Dice %.4f at epoch %d", best_dice, best_epoch)
     return {"best_dice": best_dice, "best_epoch": best_epoch, "run_dir": str(run_dir)}
 

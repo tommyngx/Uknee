@@ -1,0 +1,4 @@
+model: yolo26-pose-v1
+epochs: 150
+lr: 0.001
+seed: 2006

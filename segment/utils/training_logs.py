@@ -1,6 +1,7 @@
 import csv
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -9,6 +10,7 @@ os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "uknee-m
 
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 
 
 def to_python_number(value):
@@ -75,6 +77,54 @@ def save_training_args(log_dir, args_dict, filename="training_args.json"):
         else:
             json.dump(serializable, file, indent=4)
     return path
+
+
+def model_paper_profile(model, input_shape):
+    """Return model-size fields suitable for a paper's experiment table."""
+    model = model.module if hasattr(model, "module") else model
+    parameters = sum(parameter.numel() for parameter in model.parameters())
+    trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    gflops = None
+    was_training = model.training
+    try:
+        import thop
+
+        parameter = next(model.parameters())
+        sample = torch.zeros(tuple(input_shape), device=parameter.device, dtype=parameter.dtype)
+        model.eval()
+        macs = thop.profile(model, inputs=(sample,), verbose=False)[0]
+        gflops = float(macs) * 2.0 / 1e9
+    except Exception:
+        # Custom CUDA operators are not always traceable; keep the other fields valid.
+        gflops = None
+    finally:
+        model.train(was_training)
+    return {
+        "parameters": int(parameters),
+        "trainable_parameters": int(trainable),
+        "gflops": round(gflops, 4) if gflops is not None and math.isfinite(gflops) else None,
+        "gflops_convention": "2 x MACs for one forward pass",
+        "input_shape": list(input_shape),
+    }
+
+
+def save_summary_yaml(log_dir, summary):
+    """Write the canonical human-readable run summary."""
+    return save_training_args(log_dir, summary, filename="summary.yaml")
+
+
+def load_summary_yaml(log_dir):
+    """Load an existing summary when a run is resumed."""
+    path = Path(log_dir) / "summary.yaml"
+    if not path.is_file():
+        return {}
+    try:
+        import yaml
+
+        summary = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return summary if isinstance(summary, dict) else {}
+    except Exception:
+        return {}
 
 
 class EpochLogWriter:

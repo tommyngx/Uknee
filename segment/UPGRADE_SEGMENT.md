@@ -50,7 +50,7 @@ python -m segment.visualize \
 
 # ONNX / TorchScript Model Exporter
 python -m segment.tools.export_deploy_model \
-  --checkpoint ./runs/segmentation/U_Net_mesko/best.pt \
+  --checkpoint ./runs/segment/U_Net_mesko/best.pt \
   --data_dir ./data/mesko \
   --output_dir ./deploy/U_Net_mesko \
   --export_format auto
@@ -161,7 +161,7 @@ Currently, `main.py` uses command-line flags. Future upgrade will support centra
 ```yaml
 # segment/cfg/default.yaml
 experiment:
-  project: "runs/segmentation"
+  project: "runs/segment"
   name: "cmunext_mesko"
   seed: 2006
   device: "cuda:0"

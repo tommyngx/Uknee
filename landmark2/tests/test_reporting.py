@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import torch
+import yaml
 
 from landmark2.core.plotting import plot_pose_metrics, plot_validation_samples
 from landmark2.utils.validation import FlatPoseTrainerMixin, RESULT_COLUMNS
@@ -78,6 +80,16 @@ class ReportingTests(unittest.TestCase):
                 self.assertEqual(tuple(next(csv.reader(stream))), RESULT_COLUMNS)
             self.assertTrue((Path(directory) / "dashboard_pose.png").is_file())
 
+            trainer.model = torch.nn.Conv2d(3, 2, kernel_size=1)
+            trainer.metrics = {"metrics/MRE": 5.0, "metrics/PCK2": 0.5}
+            trainer.validator = SimpleNamespace(_sample_paths=["a", "b", "c", "d"], speed={"inference": 2.5})
+            trainer.device = torch.device("cpu")
+            trainer._write_summary()
+            summary = yaml.safe_load((Path(directory) / "summary.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(summary["task"], "landmark_detection")
+            self.assertEqual(summary["model"]["parameters"], 8)
+            self.assertEqual(summary["artifacts"]["samples_per_epoch"], 4)
+
     def test_consolidated_metrics_and_fixed_sample_grid(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -100,7 +112,7 @@ class ReportingTests(unittest.TestCase):
                 }
                 for index in range(4)
             ]
-            output = plot_validation_samples(records, root / "samples" / "val_samples_e1.png")
+            output = plot_validation_samples(records, root / "samples" / "landmark_sample_e1.png")
             self.assertIsNotNone(output)
             self.assertTrue(output.is_file())
 

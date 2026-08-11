@@ -1,0 +1,4 @@
+model: RWKV_UNetV6
+epochs: 150
+lr: 0.001
+seed: 2006
