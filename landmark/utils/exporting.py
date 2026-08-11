@@ -1,4 +1,4 @@
-"""Stable deployment output wrapper shared by all five public models."""
+"""Stable deployment output wrapper shared by all public models."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class KneePoseExportWrapper(nn.Module):
     def forward(self, images: torch.Tensor):
         raw = self.core(images)
         raw = raw[0] if isinstance(raw, (tuple, list)) else raw
-        if self.family == "heatmap":
+        if self.family != "yolo":
             detections, present = self._heatmap_detections(raw, images.shape[-2], images.shape[-1])
         else:
             detections, present = self._select_yolo_classes(raw)

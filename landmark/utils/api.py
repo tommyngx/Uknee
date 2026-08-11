@@ -1,4 +1,4 @@
-"""Public Uknee pose API backed by the vendored Ultralytics snapshot."""
+"""Public Uknee pose API backed by the self-contained landmark runtime."""
 
 from __future__ import annotations
 
@@ -9,16 +9,20 @@ from typing import Any
 import torch
 import yaml
 
-from ultralytics import YOLO
+from landmark.core.model import YOLO
 
 from landmark.data.prepare import PreparedDataset, prepare_dataset
 from landmark.utils.results import KneePoseResult, adapt_yolo_result
+from uknee_cli import parse_image_size
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CFG = PACKAGE_ROOT / "cfg" / "default.yaml"
 SUPPORTED_EXPORT_FORMATS = {"onnx", "torchscript"}
-SINGLE_IMAGE_MODELS = {"yolo26-pose-v1", "yolo26-pose-v9", "hrnet-w32-pose", "vitpose-s-pose"}
+SINGLE_IMAGE_MODELS = {
+    "yolo26-pose-v1", "yolo26-pose-v9", "hrnet-w32-pose", "hrnet-w48-pose",
+    "vitpose-s-pose", "vitpose-b-pose", "rtmo-pose",
+}
 LEGACY_MODEL_MARKERS = ("adaptive_rwkv", "adaptive_detr", "kneepv1", "kneepv2", "kneept640v0")
 
 
@@ -29,12 +33,15 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return data
 
 
-def _is_heatmap_config(path: Path) -> bool:
-    return path.suffix.lower() in {".yaml", ".yml"} and _load_yaml(path).get("landmark_family") == "heatmap"
+def _model_family(path: Path) -> str:
+    if path.suffix.lower() not in {".yaml", ".yml"}:
+        return "yolo"
+    family = str(_load_yaml(path).get("landmark_family", "yolo"))
+    return family if family in {"heatmap", "rtmo"} else "yolo"
 
 
 class KneePose:
-    """Train, validate, predict and export one of Uknee's five public models.
+    """Train, validate, predict and export an Uknee landmark model.
 
     YOLO checkpoints remain native Ultralytics checkpoints. Predictions preserve
     the standard ``Results`` object through :class:`KneePoseResult` and add the
@@ -50,11 +57,11 @@ class KneePose:
         if any(marker in lowered for marker in LEGACY_MODEL_MARKERS):
             raise ValueError(
                 f"Legacy landmark checkpoint/config '{self.model_path.name}' is not compatible with the "
-                "vendored YOLO26/heatmap runtime. Retrain or export a plain state-dict with the legacy code."
+                "landmark YOLO26/heatmap runtime. Retrain or export a plain state-dict with the legacy code."
             )
-        self.family = "heatmap" if _is_heatmap_config(self.model_path) else "yolo"
-        if self.family == "heatmap":
-            from landmark.heatmap.engine import HeatmapPose
+        self.family = _model_family(self.model_path)
+        if self.family in {"heatmap", "rtmo"}:
+            from landmark.models.heatmap_adapter import HeatmapPose
 
             self.backend = HeatmapPose(self.model_path, verbose=verbose)
         else:
@@ -63,14 +70,14 @@ class KneePose:
             except Exception as error:
                 if self.model_path.suffix.lower() == ".pt":
                     raise ValueError(
-                        f"Checkpoint '{self.model_path}' is not compatible with the vendored Uknee pose runtime. "
-                        "Expected an Ultralytics 8.4.87 YOLO26 pose checkpoint or a new HRNet/ViTPose checkpoint."
+                        f"Checkpoint '{self.model_path}' is not compatible with the landmark pose runtime. "
+                        "Expected an Ultralytics 8.4.87 YOLO26 pose checkpoint or a new HRNet/ViTPose/RTMO checkpoint."
                     ) from error
                 raise
-            if type(self.backend.model).__module__.startswith("landmark.heatmap"):
-                from landmark.heatmap.engine import HeatmapPose
+            if type(self.backend.model).__module__.startswith("landmark.models.heatmap_adapter"):
+                from landmark.models.heatmap_adapter import HeatmapPose
 
-                self.family = "heatmap"
+                self.family = str(getattr(self.backend.model, "yaml", {}).get("landmark_family", "heatmap"))
                 self.backend = HeatmapPose(self.model_path, verbose=verbose)
         if self.family == "yolo" and isinstance(self.backend.model, torch.nn.Module):
             # PoseTrainer normally attaches these attributes. YAML inference
@@ -102,17 +109,31 @@ class KneePose:
         args.update(kwargs)
         args.update(
             data=str(prepared.yaml_path),
-            project=str(PACKAGE_ROOT.parent / "runs" / "landmark"),
-            name=run_name,
-            exist_ok=True,
+            dataset_source=str(prepared.source_yaml),
+            dataset_root=str(prepared.root),
             plots=False,
             save_period=-1,
+            flipud=0.0,
+            fliplr=0.0,
+            cutmix=0.0,
+            copy_paste=0.0,
+            erasing=0.0,
+            bgr=0.0,
         )
+        args["project"] = str(Path(kwargs.get("project") or PACKAGE_ROOT.parent / "runs").expanduser().resolve())
+        args["name"] = str(kwargs.get("name") or run_name)
+        args["exist_ok"] = bool(kwargs.get("exist_ok", True))
+        args["imgsz"] = parse_image_size(args.get("imgsz", 640))
+        Path(args["project"]).mkdir(parents=True, exist_ok=True)
+        if args["imgsz"][0] != args["imgsz"][1]:
+            # Vendored mosaic assumes a square canvas. Rectangular runs use
+            # the normal medical-image affine/intensity path plus letterbox.
+            args.update(mosaic=0.0, mixup=0.0, cutmix=0.0, multi_scale=0.0, rect=False)
         head_name = type(self.model.model[-1]).__name__ if self.family == "yolo" else ""
         if (
             self.model_path.stem in SINGLE_IMAGE_MODELS
             or head_name in {"OA26HeatmapPose", "OA26RegionRefinePose"}
-            or self.family == "heatmap"
+            or self.family in {"heatmap", "rtmo"}
         ):
             args.update(mosaic=0.0, mixup=0.0, cutmix=0.0)
 
@@ -148,7 +169,7 @@ class KneePose:
                 f"Uknee exposes only {sorted(SUPPORTED_EXPORT_FORMATS)}, got format={format!r}. "
                 "Other exporters remain internal to the vendored backend."
             )
-        from ultralytics.engine.exporter import Exporter
+        from landmark.core.exporter import Exporter
 
         from landmark.utils.exporting import KneePoseExportWrapper
 
@@ -157,7 +178,7 @@ class KneePose:
         # which has no ONNX symbolic. Disabling only that fused fast-path
         # decomposes V9/ViTPose attention into equivalent exportable ops; it
         # does not alter ROIAlign or ordinary train/inference execution.
-        uses_attention = self.family == "heatmap" or type(self.model.model[-1]).__name__ == "OA26RegionRefinePose"
+        uses_attention = self.family in {"heatmap", "rtmo"} or type(self.model.model[-1]).__name__ == "OA26RegionRefinePose"
         mha_fastpath = torch.backends.mha.get_fastpath_enabled()
         if normalized == "onnx" and uses_attention:
             torch.backends.mha.set_fastpath_enabled(False)

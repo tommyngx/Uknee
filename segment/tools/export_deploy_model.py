@@ -15,6 +15,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
@@ -25,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from segment.models import build_model
+from segment.utils.preprocessing import letterbox_array, resolve_target_hw
 
 
 VALID_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -52,7 +54,7 @@ def parse_args():
         "--checkpoint",
         type=str,
         required=True,
-        help="Checkpoint file path or flat run directory containing best.pt/last.pt.",
+        help="Checkpoint file path or run directory containing weights/best.pt or weights/last.pt.",
     )
     parser.add_argument("--data_dir", type=str, required=True, help="Dataset root with images/ and masks/")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save exported model and preview")
@@ -80,6 +82,8 @@ def resolve_checkpoint_path(checkpoint_arg: str):
 
     if checkpoint_path.is_dir():
         candidates = [
+            checkpoint_path / "weights" / "best.pt",
+            checkpoint_path / "weights" / "last.pt",
             checkpoint_path / "best.pt",
             checkpoint_path / "last.pt",
             checkpoint_path / "best_models" / "checkpoint_top1.pth",
@@ -101,6 +105,7 @@ def load_checkpoint_config(checkpoint_path: Path):
     if config_dict is None:
         config_paths = [
             checkpoint_path.parent / "args.yaml",
+            checkpoint_path.parent.parent / "args.yaml",
             checkpoint_path.parent.parent / "configs" / "config.json",
         ]
         config_path = next((path for path in config_paths if path.is_file()), None)
@@ -179,25 +184,31 @@ def choose_random_pairs(data_dir: Path, num_samples: int, seed: int):
     return [(stem, image_map[stem], mask_map[stem]) for stem in chosen_stems]
 
 
-def load_image_for_model(image_path: Path, img_size: int, input_channel: int):
+def load_image_for_model(image_path: Path, img_size, input_channel: int):
     with Image.open(image_path) as image:
-        display_image = image.convert("RGB").resize((img_size, img_size), Image.BILINEAR)
+        display_image = np.array(image.convert("RGB"), dtype=np.uint8)
+        display_canvas, _ = letterbox_array(display_image, resolve_target_hw(img_size))
         if input_channel == 1:
-            model_image = display_image.convert("L")
-            image_array = np.array(model_image, dtype=np.float32)[..., None]
+            source = np.array(image.convert("L"), dtype=np.uint8)
+            image_array, _ = letterbox_array(source, resolve_target_hw(img_size))
+            image_array = image_array.astype(np.float32)[..., None]
         else:
-            image_array = np.array(display_image, dtype=np.float32)
+            image_array, _ = letterbox_array(display_image, resolve_target_hw(img_size))
+            image_array = image_array.astype(np.float32)
 
     image_array = image_array / 255.0
     tensor = torch.from_numpy(image_array.transpose(2, 0, 1)).unsqueeze(0)
-    return tensor, np.array(display_image)
+    return tensor, display_canvas
 
 
-def load_mask_for_preview(mask_path: Path, img_size: int):
+def load_mask_for_preview(mask_path: Path, img_size):
     with Image.open(mask_path) as mask:
-        mask = mask.convert("L").resize((img_size, img_size), Image.NEAREST)
-        mask_array = np.array(mask, dtype=np.uint8)
-    mask_array = (mask_array > 0).astype(np.uint8) * 255
+        mask_array = np.array(mask.convert("L"), dtype=np.uint8)
+    mask_array, _ = letterbox_array(
+        mask_array,
+        resolve_target_hw(img_size),
+        interpolation=cv2.INTER_NEAREST,
+    )
     return mask_array
 
 
@@ -210,10 +221,7 @@ def render_prediction(logits: torch.Tensor, threshold: float):
         prediction = (probabilities >= threshold).to(torch.uint8) * 255
         return prediction[0, 0].cpu().numpy()
 
-    prediction = torch.argmax(logits, dim=1).to(torch.uint8)
-    max_label = int(max(logits.shape[1] - 1, 1))
-    prediction = (prediction * (255 // max_label)).cpu().numpy()
-    return prediction[0]
+    return torch.argmax(logits, dim=1)[0].to(torch.uint8).cpu().numpy()
 
 
 def save_preview(output_path: Path, preview_rows):
@@ -266,7 +274,7 @@ def load_checkpoint_model(model_path: Path, device: torch.device):
         num_classes=int(config.num_classes),
     ).to(device)
     state_dict = checkpoint["state_dict"] if "state_dict" in checkpoint else checkpoint
-    model.load_state_dict(state_dict, strict=False)
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
     return SegmentationInferenceWrapper(model).to(device).eval()
 
@@ -314,16 +322,17 @@ def main():
     ).to(device)
 
     state_dict = checkpoint["state_dict"] if "state_dict" in checkpoint else checkpoint
-    model.load_state_dict(state_dict, strict=False)
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
     config_dict = namespace_to_dict(config)
 
     wrapper = SegmentationInferenceWrapper(model).to(device).eval()
+    target_height, target_width = resolve_target_hw(config.img_size)
     dummy_input = torch.randn(
         1,
         int(config.input_channel),
-        int(config.img_size),
-        int(config.img_size),
+        target_height,
+        target_width,
         device=device,
     )
 
@@ -377,10 +386,10 @@ def main():
         for stem, image_path, mask_path in sample_pairs:
             input_tensor, display_image = load_image_for_model(
                 image_path=image_path,
-                img_size=int(config.img_size),
+                img_size=[target_height, target_width],
                 input_channel=int(config.input_channel),
             )
-            gt_mask = load_mask_for_preview(mask_path, img_size=int(config.img_size))
+            gt_mask = load_mask_for_preview(mask_path, img_size=[target_height, target_width])
             logits = converted_model(input_tensor.to(device))
             if not torch.isfinite(logits).all():
                 raise RuntimeError(
@@ -407,7 +416,8 @@ def main():
         "export_format": actual_export_format,
         "preview_path": str(preview_path),
         "model_name": config.model,
-        "img_size": int(config.img_size),
+        "img_size": [target_height, target_width],
+        "image_size_order": "height_width",
         "input_channel": int(config.input_channel),
         "num_classes": int(config.num_classes),
         "device": str(device),

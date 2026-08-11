@@ -8,7 +8,7 @@ from typing import Any
 import torch
 
 from landmark.data.schema import NUM_LANDMARKS, objects_to_canonical
-from landmark.utils.plotting import plot_dashboard_pose, plot_pose_metrics, plot_validation_samples
+from landmark.core.plotting import plot_dashboard_pose, plot_pose_metrics, plot_validation_samples
 
 
 @dataclass

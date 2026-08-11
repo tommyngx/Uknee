@@ -1,5 +1,5 @@
-# Runtime dependencies for the standalone vendored pose package.
-# Do not add `ultralytics`: source is pinned under landmark/_vendor.
+# Runtime dependencies for the self-contained pose-only package.
+# Do not add `ultralytics`: landmark owns the required runtime source.
 numpy>=1.23.0
 matplotlib>=3.3.0
 opencv-python>=4.6.0

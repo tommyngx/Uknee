@@ -1,4 +1,4 @@
-"""HRNet-W32 full-frame heatmap baseline.
+"""HRNet-W32/W48 full-frame heatmap baselines.
 
 The stage layout follows the W32 pose backbone: one 2-branch stage, four
 3-branch modules and three 4-branch modules with repeated multi-resolution
@@ -152,10 +152,10 @@ def _apply_transition(layers: nn.ModuleList, inputs: list[torch.Tensor]) -> list
     return [layer(inputs[index] if index < len(inputs) else inputs[-1]) for index, layer in enumerate(layers)]
 
 
-class HRNetW32(nn.Module):
-    """Canonical W32 high-resolution backbone and a 129-channel pose head."""
+class _HRNet(nn.Module):
+    """Canonical high-resolution backbone and a 129-channel pose head."""
 
-    def __init__(self, input_channels: int = 3, num_landmarks: int = 129):
+    def __init__(self, width: int, input_channels: int = 3, num_landmarks: int = 129):
         super().__init__()
         self.stem = nn.Sequential(
             nn.Conv2d(input_channels, 64, 3, 2, 1, bias=False),
@@ -166,7 +166,9 @@ class HRNetW32(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.layer1 = _residual_layer(Bottleneck, 64, 64, 4)
-        stage1, stage2, stage3 = (32, 64), (32, 64, 128), (32, 64, 128, 256)
+        stage1 = (width, width * 2)
+        stage2 = (width, width * 2, width * 4)
+        stage3 = (width, width * 2, width * 4, width * 8)
         self.transition1 = _transition((256,), stage1)
         self.stage2 = nn.Sequential(HighResolutionModule(stage1))
         self.transition2 = _transition(stage1, stage2)
@@ -192,7 +194,21 @@ class HRNetW32(nn.Module):
         return self.final_layer(features[0])
 
 
+class HRNetW32(_HRNet):
+    """HRNet-W32 with the standard 32/64/128/256 stage widths."""
+
+    def __init__(self, input_channels: int = 3, num_landmarks: int = 129):
+        super().__init__(32, input_channels=input_channels, num_landmarks=num_landmarks)
+
+
+class HRNetW48(_HRNet):
+    """HRNet-W48 with the standard 48/96/192/384 stage widths."""
+
+    def __init__(self, input_channels: int = 3, num_landmarks: int = 129):
+        super().__init__(48, input_channels=input_channels, num_landmarks=num_landmarks)
+
+
 # Compatibility alias for published imports; this is now the full W32 model.
 HRNetLandmarkBaseline = HRNetW32
 
-__all__ = ["HRNetW32", "HRNetLandmarkBaseline"]
+__all__ = ["HRNetW32", "HRNetW48", "HRNetLandmarkBaseline"]

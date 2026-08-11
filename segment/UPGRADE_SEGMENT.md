@@ -24,7 +24,7 @@ train_loader, val_loader = getDataloader(args)
 evaluator = SegmentationEvaluator(num_classes=4, class_names=["Background", "Femur", "Tibia", "Patella"])
 evaluator.update(logits, targets)
 snapshot = evaluator.snapshot()
-plot_segmentation_metrics(snapshot, "runs/segmentation_metrics.png")
+plot_segmentation_metrics(snapshot, "runs/segment_metrics.png")
 ```
 
 ### 1.2 CLI Commands
@@ -50,7 +50,7 @@ python -m segment.visualize \
 
 # ONNX / TorchScript Model Exporter
 python -m segment.tools.export_deploy_model \
-  --checkpoint ./runs/segment/U_Net_mesko/best.pt \
+  --checkpoint ./runs/segment/U_Net_mesko/weights/best.pt \
   --data_dir ./data/mesko \
   --output_dir ./deploy/U_Net_mesko \
   --export_format auto
@@ -64,7 +64,7 @@ python -m segment.utils.downloads weights
 
 ## 2. Directory Structure (Completed AS-IS State)
 
-The segmentation framework has been isolated into its own dedicated package [segment/](file:///Users/francistommy/Desktop/BugHunter/Project/Uknee/segment) at the workspace root, standing alongside `landmark/`, `landmark2/`, `Ref/`, `info/`, and `tests/`:
+The segmentation framework has been isolated into its own dedicated package [segment/](file:///Users/francistommy/Desktop/BugHunter/Project/Uknee/segment) at the workspace root, standing alongside `landmark0/`, `landmark/`, `Ref/`, `info/`, and `tests/`:
 
 ```text
 Uknee/                                    # Workspace Root
@@ -114,8 +114,8 @@ Uknee/                                    # Workspace Root
 │   ├── visualize.py                      # Interactive Prediction Visualizer
 │   └── UPGRADE_SEGMENT.md                # This specification document
 │
-├── landmark/                             # 📍 Legacy Pose Detection
-├── landmark2/                            # 📍 Successor Pose Detection
+├── landmark0/                            # 📍 Archived Pose Detection
+├── landmark/                             # 📍 Current Pose Detection
 ├── Ref/                                  # 💾 Reference Datasets & Weights
 ├── info/                                 # 📄 Project License & Documentation
 └── tests/                                # 🧪 Shared Root Test Suite
@@ -190,13 +190,13 @@ training:
 Rename subdirectories in `segment/models/` to PEP 8 lower-case (`cnn/`, `hybrid/`, `mamba/`, `rwkv/`, `transformer/`) and update `MODEL_REGISTRY` accordingly.
 
 ### 5.3 Unified `core/` Package Organization
-Group `losses.py`, `binary_metrics.py`, `metrics_medpy.py`, `segment_reporting.py`, and `training_logs.py` into a unified `segment/core/` subpackage to align 1:1 with `landmark2/core/`.
+Group `losses.py`, `binary_metrics.py`, `metrics_medpy.py`, `segment_reporting.py`, and `training_logs.py` into a unified `segment/core/` subpackage to align 1:1 with `landmark/core/`.
 
 ### 5.4 Unified Evaluation CLI (`segment/eval.py`)
 Add a dedicated evaluation script for batch testing, zero-shot validation, and automated per-class Dice/HD95 table generation.
 
 ### 5.5 Joint Landmark + Segmentation Pipeline
-Enable joint multi-task deployment where `landmark2` detects knee ROI landmarks to crop bounding boxes, and `segmentation` segments cartilage/bone masks on the cropped region.
+Enable joint multi-task deployment where `landmark` detects knee ROI landmarks to crop bounding boxes, and `segmentation` segments cartilage/bone masks on the cropped region.
 
 ---
 
@@ -207,10 +207,10 @@ Run verification commands to confirm system integrity:
 ```bash
 # Run root test suite
 python tests/test_segment_reporting.py
-python tests/test_landmark2_sample_plotting.py
+python tests/code/test_landmark_sample_plotting.py
 
-# Run landmark2 test suite
-python -m unittest discover -s landmark2/tests -v
+# Run archived landmark0 test suite
+python -m unittest discover -s landmark0/tests -v
 
 # Run landmark test suite
 python -m unittest discover -s landmark/tests -v

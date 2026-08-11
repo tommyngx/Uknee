@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 from torch.utils.data import Dataset
 
+from segment.dataloader.image_io import read_rgb_image
+
 
 VALID_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 MESKO_DATASET_NAMES = {"mesko", "mesko5seg", "mesko_5seg", "unet_mesko5seg"}
@@ -186,7 +188,7 @@ class Mesko5SegDataset(Dataset):
     def __getitem__(self, idx):
         case, image_path, mask_path = self.samples[idx]
 
-        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        image = read_rgb_image(image_path)
         label = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         if image is None or label is None:
             raise FileNotFoundError(

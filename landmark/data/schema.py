@@ -35,14 +35,43 @@ def validate_region_schema(nc: int, kpt_shape: tuple[int, int] | list[int]) -> N
         )
 
 
-def class_keypoint_mask(class_ids: torch.Tensor) -> torch.Tensor:
+def class_keypoint_mask(
+    class_ids: torch.Tensor, max_keypoints: int = MAX_REGION_KEYPOINTS
+) -> torch.Tensor:
     """Return valid local keypoint slots for each anatomical class."""
     class_ids = class_ids.long()
     if ((class_ids < 0) | (class_ids >= NUM_REGIONS)).any():
         raise ValueError("Region class IDs must be in [0, 3]")
     counts = class_ids.new_tensor(REGION_KEYPOINT_COUNTS)
-    slots = torch.arange(MAX_REGION_KEYPOINTS, device=class_ids.device)
+    if max_keypoints < 1:
+        raise ValueError("max_keypoints must be positive")
+    slots = torch.arange(max_keypoints, device=class_ids.device)
     return slots.view(*((1,) * class_ids.ndim), -1) < counts[class_ids].unsqueeze(-1)
+
+
+def class_path_masks(class_ids: torch.Tensor, order: int = 2) -> torch.Tensor:
+    """Return starts that remain inside each anatomical path for pairs/triples."""
+    if order not in {2, 3}:
+        raise ValueError("order must be 2 or 3")
+    class_ids = class_ids.long().flatten()
+    if ((class_ids < 0) | (class_ids >= NUM_REGIONS)).any():
+        raise ValueError("Region class IDs must be in [0, 3]")
+    masks = torch.zeros(
+        class_ids.numel(),
+        MAX_REGION_KEYPOINTS - order + 1,
+        dtype=torch.bool,
+        device=class_ids.device,
+    )
+    local_paths = {
+        0: ((0, 45),),
+        1: ((0, 41), (41, 46), (46, 51)),
+        2: ((0, 24),),
+        3: ((0, 9),),
+    }
+    for row, class_id in enumerate(class_ids.tolist()):
+        for start, stop in local_paths[class_id]:
+            masks[row, start : max(start, stop - order + 1)] = True
+    return masks
 
 
 def objects_to_canonical(
@@ -78,4 +107,3 @@ def objects_to_canonical(
         else:
             confidence[offset : offset + count] = scores[selected].clamp(0, 1)
     return coordinates, confidence
-

@@ -56,6 +56,24 @@ def _to_display_image(image):
     return image
 
 
+def _resize_sample_for_display(image, target, prediction, fixed_height=512):
+    """Resize a sample to a fixed height while preserving its original aspect ratio."""
+    import cv2
+
+    height, width = image.shape[:2]
+    if height <= 0 or width <= 0:
+        return image, target, prediction
+    display_width = max(1, round(width * int(fixed_height) / height))
+    size = (display_width, int(fixed_height))
+    image_interpolation = cv2.INTER_AREA if fixed_height < height else cv2.INTER_CUBIC
+    image = cv2.resize(image, size, interpolation=image_interpolation)
+    if np.issubdtype(image.dtype, np.floating):
+        image = np.clip(image, 0.0, 1.0)
+    target = cv2.resize(np.asarray(target), size, interpolation=cv2.INTER_NEAREST)
+    prediction = cv2.resize(np.asarray(prediction), size, interpolation=cv2.INTER_NEAREST)
+    return image, target, prediction
+
+
 @dataclass
 class ValidationSnapshot:
     dice: float
@@ -271,6 +289,7 @@ class SegmentationEvaluator:
             image = _to_display_image(sample["image"])
             target = sample["target"]
             prediction = sample["prediction"]
+            image, target, prediction = _resize_sample_for_display(image, target, prediction)
 
             ax.imshow(image, cmap="gray" if image.ndim == 2 else None, aspect="equal")
 
@@ -308,7 +327,6 @@ class SegmentationEvaluator:
         plt.close(fig)
         return output_path
 
-
 def plot_segmentation_metrics(snapshot, output_path):
     """Write the required four-panel segmentation evaluation report."""
     output_path = Path(output_path)
@@ -317,53 +335,103 @@ def plot_segmentation_metrics(snapshot, output_path):
     for axis in axes.flat:
         _style_axis(axis)
 
+    # 1. Confusion Matrix Panel (Matching landmark 1:1 with Frosted Glass Badges & grid(False))
     confusion = snapshot.confusion.astype(float)
     row_sums = confusion.sum(axis=1, keepdims=True)
     normalized = np.divide(confusion, row_sums, out=np.zeros_like(confusion), where=row_sums != 0)
     axis = axes[0, 0]
+    axis.grid(False)
     image = axis.imshow(normalized, cmap="Blues", vmin=0, vmax=1)
-    for row in range(2):
-        for column in range(2):
-            value = normalized[row, column]
-            axis.text(column, row, f"{100 * value:.1f}%", ha="center", va="center",
-                      color="white" if value > 0.55 else "black")
-    axis.set_xticks([0, 1], ["Background", "Mask"])
-    axis.set_yticks([0, 1], ["Background", "Mask"])
-    axis.set_xlabel("Predicted")
-    axis.set_ylabel("Ground truth")
-    axis.set_title("Normalized Confusion Matrix")
+
+    n_rows, n_cols = normalized.shape
+    for row in range(n_rows):
+        for column in range(n_cols):
+            val = normalized[row, column]
+            raw_cnt = int(confusion[row, column])
+            if val > 0.45:
+                text_color = "#ffffff"
+                bg_box = "#000000"
+                bg_alpha = 0.25
+            else:
+                text_color = "#0f172a"
+                bg_box = "#ffffff"
+                bg_alpha = 0.55
+
+            cell_text = f"{val * 100:.1f}%\n(n={raw_cnt})"
+            axis.text(
+                column, row, cell_text,
+                ha="center", va="center", color=text_color, fontsize=8.5, fontweight="bold",
+                bbox=dict(
+                    boxstyle="round,pad=0.25,rounding_size=0.4",
+                    facecolor=bg_box,
+                    alpha=bg_alpha,
+                    edgecolor="none",
+                ),
+            )
+
+    gt_counts = confusion.sum(axis=1).astype(int)
+    labels = ["Background", "Mask"] if n_rows == 2 else (snapshot.class_names or [f"Class {i}" for i in range(n_rows)])
+    x_labels = [f"{name}\n(N={gt_counts[i]})" if i < len(gt_counts) else name for i, name in enumerate(labels)]
+    axis.set_xticks(range(n_cols), x_labels, rotation=20 if n_cols > 2 else 0, ha="right" if n_cols > 2 else "center")
+    axis.set_yticks(range(n_rows))
+    axis.set_yticklabels(labels, rotation=90, va="center", ha="right")
+    axis.set_xlabel("Predicted Label", fontsize=9.5, fontweight="bold")
+    axis.set_ylabel("True Groundtruth Label", fontsize=9.5, fontweight="bold")
+    axis.set_title("Normalized Confusion Matrix (Counts & %)", fontsize=11, fontweight="bold", pad=8)
     fig.colorbar(image, ax=axis, fraction=0.046, pad=0.04)
 
+    # 2. Per-Region Dice and IoU Panel (Sufficient Headroom & Clear Non-Overlapping Bar Numbers)
     axis = axes[0, 1]
+    axis.grid(True, linestyle="--", alpha=0.3)
     positions = np.arange(len(snapshot.class_names))
-    width = 0.38
-    axis.bar(positions - width / 2, 100 * snapshot.class_dice, width, label="Dice", color="#2ca02c")
-    axis.bar(positions + width / 2, 100 * snapshot.class_iou, width, label="IoU", color="#1f77b4")
-    axis.set_xticks(positions, snapshot.class_names, rotation=20, ha="right")
-    axis.set_ylim(0, 105)
-    axis.set_ylabel("Score (%)")
-    axis.set_title("Per-Region Dice and IoU")
-    axis.legend()
+    width = 0.36
+    bars_dice = axis.bar(positions - width / 2, 100 * snapshot.class_dice, width, color="#22c55e", edgecolor="#15803d", linewidth=1.0)
+    bars_iou = axis.bar(positions + width / 2, 100 * snapshot.class_iou, width, color="#3b82f6", edgecolor="#1d4ed8", linewidth=1.0)
 
+    for bar in bars_dice:
+        h = bar.get_height()
+        if h > 0:
+            axis.text(bar.get_x() + bar.get_width() / 2.0, h + 2.0, f"{round(h)}", ha="center", va="bottom", fontsize=8.0, fontweight="bold", color="#15803d")
+    for bar in bars_iou:
+        h = bar.get_height()
+        if h > 0:
+            axis.text(bar.get_x() + bar.get_width() / 2.0, h + 2.0, f"{round(h)}", ha="center", va="bottom", fontsize=8.0, fontweight="bold", color="#1d4ed8")
+
+    axis.set_xticks(positions, snapshot.class_names, rotation=20, ha="right")
+    axis.set_ylim(0, 130)
+    axis.set_ylabel("Score (%)", fontsize=9.5, fontweight="bold")
+    axis.set_title("Per-Region Dice and IoU Scores", fontsize=11, fontweight="bold", pad=8)
+
+    from matplotlib.patches import Patch
+    legend_handles = [
+        Patch(facecolor="#22c55e", edgecolor="#15803d", linewidth=1.0, label="Dice Score (%)"),
+        Patch(facecolor="#3b82f6", edgecolor="#1d4ed8", linewidth=1.0, label="IoU Score (%)"),
+    ]
+    axis.legend(handles=legend_handles, loc="upper right", fontsize=8.5, frameon=True, facecolor="white", edgecolor="#cbd5e1")
+
+    # 3. Precision-Recall Curve Panel
     axis = axes[1, 0]
+    axis.grid(True, linestyle="--", alpha=0.3)
     axis.plot(snapshot.recall_curve, snapshot.precision_curve, color="#9467bd", linewidth=2.2)
     axis.set_xlim(0, 1)
     axis.set_ylim(0, 1.02)
-    axis.set_xlabel("Recall")
-    axis.set_ylabel("Precision")
-    axis.set_title("Mask Precision–Recall Curve")
+    axis.set_xlabel("Recall", fontsize=9.5, fontweight="bold")
+    axis.set_ylabel("Precision", fontsize=9.5, fontweight="bold")
+    axis.set_title("Mask Precision–Recall Curve", fontsize=11, fontweight="bold", pad=8)
 
+    # 4. Boundary Distance Distribution Panel
     axis = axes[1, 1]
+    axis.grid(True, linestyle="--", alpha=0.3)
     values = [snapshot.hd95_values, snapshot.assd_values]
     if any(len(item) for item in values):
         axis.boxplot(values, tick_labels=["HD95", "ASSD"], patch_artist=True,
-                     boxprops={"facecolor": "#dbeafe", "edgecolor": "black"},
-                     medianprops={"color": "#dc2626", "linewidth": 1.5})
-    axis.set_ylabel("Distance (mm)")
-    axis.set_title("Boundary Distance Distribution")
+                     boxprops={"facecolor": "#dbeafe", "edgecolor": "#1d4ed8"},
+                     medianprops={"color": "#dc2626", "linewidth": 1.8})
+    axis.set_ylabel("Distance (mm)", fontsize=9.5, fontweight="bold")
+    axis.set_title("Boundary Distance Distribution (mm)", fontsize=11, fontweight="bold", pad=8)
 
-    fig.suptitle("Segmentation Evaluation & Metric Performance Report", fontsize=14, fontweight="bold", color="#1e293b", ha="center", y=0.98)
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.suptitle("Segmentation Evaluation & Metric Performance Report", fontsize=14, fontweight="bold", color="#1e293b", ha="center", y=0.965)
+    fig.tight_layout(rect=(0, 0.04, 1, 0.95))
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
     return output_path

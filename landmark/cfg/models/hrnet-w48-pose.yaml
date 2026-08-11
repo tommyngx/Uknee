@@ -1,0 +1,10 @@
+# Full-frame HRNet-W48 heatmap model for the canonical 129 landmarks.
+landmark_family: heatmap
+architecture: hrnet_w48
+input_channels: 3
+num_landmarks: 129
+heatmap_stride: 4
+heatmap_sigma: 1.5
+coordinate_loss_gain: 1.0
+nc: 4
+kpt_shape: [51, 3]

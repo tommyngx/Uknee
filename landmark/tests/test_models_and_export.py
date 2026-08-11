@@ -7,7 +7,7 @@ import torch
 
 from landmark import KneePose
 from landmark.utils.exporting import KneePoseExportWrapper
-from ultralytics.cfg import get_cfg
+from landmark.core.config import get_cfg
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,13 +65,56 @@ class ModelAndExportTests(unittest.TestCase):
             self.assertTrue(all(torch.isfinite(items)))
             self.assertTrue(any(parameter.grad is not None for parameter in model.parameters()))
 
+    def test_hrnet_w48_and_vitpose_b_build_with_canonical_output(self):
+        for filename, architecture, minimum_parameters in (
+            ("hrnet-w48-pose.yaml", "HRNetW48", 60_000_000),
+            ("vitpose-b-pose.yaml", "ViTPoseB", 85_000_000),
+        ):
+            wrapper = KneePose(ROOT / "cfg" / "models" / filename)
+            model = wrapper.model.eval()
+            with torch.no_grad():
+                output = model(torch.zeros(1, 3, 64, 96))
+            self.assertEqual(type(model.network).__name__, architecture)
+            self.assertEqual(tuple(output.shape), (1, 129, 3))
+            self.assertGreater(sum(parameter.numel() for parameter in model.parameters()), minimum_parameters)
+
+    def test_rtmo_dcc_and_grouped_pose_branches_receive_gradients(self):
+        wrapper = KneePose(ROOT / "cfg" / "models" / "rtmo-pose.yaml")
+        self.assertEqual(wrapper.family, "rtmo")
+        with torch.no_grad():
+            rectangular_output = wrapper.model.eval()(torch.zeros(1, 3, 64, 96))
+        self.assertEqual(tuple(rectangular_output.shape), (1, 129, 3))
+        model = wrapper.model.train()
+        loss, items = model(self._pose_batch())
+        loss.backward()
+        self.assertEqual(tuple(items.shape), (5,))
+        self.assertTrue(torch.isfinite(loss))
+        gradients = {name: parameter.grad for name, parameter in model.named_parameters()}
+        for prefix in (
+            "network.backbone",
+            "network.neck",
+            "network.head.classification",
+            "network.head.pose",
+            "network.head.out_offset",
+            "network.dcc.gau",
+            "network.dcc.x_projection",
+            "network.dcc.y_projection",
+        ):
+            self.assertTrue(
+                any(value is not None for name, value in gradients.items() if name.startswith(prefix)),
+                f"No RTMO gradient reached {prefix}",
+            )
+
     def test_all_models_have_fixed_export_contract(self):
         filenames = (
             "yolo26-pose.yaml",
             "yolo26-pose-v1.yaml",
             "yolo26-pose-v9.yaml",
             "hrnet-w32-pose.yaml",
+            "hrnet-w48-pose.yaml",
             "vitpose-s-pose.yaml",
+            "vitpose-b-pose.yaml",
+            "rtmo-pose.yaml",
         )
         for filename in filenames:
             wrapper = KneePose(ROOT / "cfg" / "models" / filename)

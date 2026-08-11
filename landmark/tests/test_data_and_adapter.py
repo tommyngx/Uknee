@@ -3,9 +3,12 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import numpy as np
 import torch
+
+from landmark.data.augment import Format
 import landmark  # noqa: F401 - bootstrap the pinned backend before absolute imports
-from ultralytics.utils import ops
+from landmark.core import ops
 
 from landmark.data import (
     NUM_LANDMARKS,
@@ -24,6 +27,11 @@ def group_key(path: Path) -> str:
 
 
 class DatasetAndAdapterTests(unittest.TestCase):
+    def test_training_formatter_uses_rgb_contract(self):
+        bgr = np.array([[[10, 20, 30]]], dtype=np.uint8)
+        tensor = Format(bgr=0.0)._format_img(bgr)
+        self.assertEqual(tensor[:, 0, 0].tolist(), [30, 20, 10])
+
     @classmethod
     def setUpClass(cls):
         cls.prepared = prepare_dataset(ROOT / "cfg" / "datasets" / "mesko4gf2.yaml")

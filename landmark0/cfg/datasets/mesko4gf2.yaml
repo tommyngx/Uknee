@@ -1,0 +1,28 @@
+# Paths are resolved relative to the repository by landmark0.data.prepare.
+path: Ref/yolo_mesko4GF2
+dataset_name: mesko
+train: images/train
+val: images/train
+test: images/train
+
+channels: 3
+names:
+  0: femur
+  1: tibia
+  2: fibula
+  3: patella
+
+kpt_shape: [51, 3]
+flip_idx: []
+
+# Uknee extension used by target adapters, medical metrics and split checks.
+region_keypoint_counts: [45, 51, 24, 9]
+landmark_path_ranges:
+  - [0, 45]
+  - [45, 86]
+  - [86, 91]
+  - [91, 96]
+  - [96, 120]
+  - [120, 129]
+val_fraction: 0.15
+split_seed: 2006

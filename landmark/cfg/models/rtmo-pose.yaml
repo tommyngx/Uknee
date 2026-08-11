@@ -1,0 +1,20 @@
+# RTMO adapted to four fixed knee regions and the canonical 129 landmarks.
+# Core design follows MMPose RTMOHead: multi-level grouped pose branches + DCC/GAU.
+landmark_family: rtmo
+architecture: rtmo
+input_channels: 3
+num_landmarks: 129
+backbone_width: 48
+backbone_depth: 2
+neck_channels: 256
+attention_heads: 8
+pose_vector_channels: 256
+dcc_feature_channels: 128
+dcc_bins: [192, 256]
+coordinate_loss_gain: 5.0
+proxy_loss_gain: 1.0
+visibility_loss_gain: 1.0
+bbox_loss_gain: 2.0
+mle_loss_gain: 1.0
+nc: 4
+kpt_shape: [51, 3]

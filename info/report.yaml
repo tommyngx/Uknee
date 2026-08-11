@@ -1,12 +1,12 @@
 schema_version: 1
 generated_at: "2026-08-11T13:30:42+10:00"
 comparison:
-  baseline: landmark
-  candidate: landmark2
+  baseline: landmark0
+  candidate: landmark
   baseline_mutated: false
   status: pass
   conclusion: >-
-    landmark2 preserves the five public pose models and the canonical
+    landmark preserves the public pose models and the canonical
     129-landmark contract while removing the vendored-package bootstrap,
     remote integrations, unused task configs, and unsupported export backends.
 
@@ -43,8 +43,8 @@ structure:
     - utils
     - tests
   removed:
-    - landmark2/_vendor
-    - landmark2/heatmap
+    - landmark0/_vendor
+    - landmark0/heatmap
     - bootstrap module and global ultralytics package injection
     - classify, segment, OBB, tracker, HUB, and experiment-tracker configs
     - non-PyTorch, non-TorchScript, and non-ONNX deployment backends
@@ -53,54 +53,57 @@ structure:
   merged:
     schema:
       from:
-        - landmark/data/schema.py
-        - landmark/_vendor/ultralytics/utils/oa26_region_refine/region_schema.py
-      to: landmark2/data/schema.py
+        - landmark0/data/schema.py
+        - landmark0/_vendor/ultralytics/utils/oa26_region_refine/region_schema.py
+      to: landmark/data/schema.py
     targets:
       from:
         - ultralytics/utils/oa26/heatmap.py
         - ultralytics/utils/oa26/simcc.py
-      to: landmark2/core/targets.py
+      to: landmark/core/targets.py
     losses:
       from:
         - ultralytics/utils/loss.py
         - ultralytics/utils/oa26/loss.py
         - ultralytics/utils/oa26_region_refine/loss.py
-      to: landmark2/core/loss.py
+      to: landmark/core/loss.py
     plotting:
       from:
         - ultralytics/utils/plotting.py
-        - landmark/utils/plotting.py
-      to: landmark2/core/plotting.py
+        - landmark0/utils/plotting.py
+      to: landmark/core/plotting.py
     detection_frontend:
       from_files: 3
-      to: landmark2/core/detect.py
+      to: landmark/core/detect.py
     pose_frontend:
       from_files: 3
-      to: landmark2/core/pose.py
+      to: landmark/core/pose.py
     heatmap_adapter:
-      from: landmark/heatmap/engine.py
-      to: landmark2/models/heatmap_adapter.py
+      from: landmark0/heatmap/engine.py
+      to: landmark/models/heatmap_adapter.py
     callbacks:
-      to: landmark2/core/callbacks.py
+      to: landmark/core/callbacks.py
       behavior: local no-op registry; no external tracking imports
     configuration:
       to:
-        - landmark2/core/config.py
-        - landmark2/cfg/default.yaml
+        - landmark/core/config.py
+        - landmark/cfg/default.yaml
       public_tasks:
         - detect
         - pose
 
 public_contract:
-  import_before: "from landmark import KneePose"
-  import_after: "from landmark2 import KneePose"
+  import_before: "from landmark0 import KneePose"
+  import_after: "from landmark import KneePose"
   models:
     yolo26-pose.yaml: Pose26
     yolo26-pose-v1.yaml: OA26HeatmapPose
     yolo26-pose-v9.yaml: OA26RegionRefinePose
     hrnet-w32-pose.yaml: HRNetW32
+    hrnet-w48-pose.yaml: HRNetW48
     vitpose-s-pose.yaml: ViTPoseS
+    vitpose-b-pose.yaml: ViTPoseB
+    rtmo-pose.yaml: RTMOKneePose
   prediction:
     object_shape: "N x 51 x 3"
     canonical_shape: "129 x 3"
@@ -113,22 +116,22 @@ public_contract:
       num_detections: "B"
       canonical: "B x 129 x 3"
   run_directory_changed:
-    from: runs/landmark
-    to: runs/landmark2
+    from: runs/landmark0
+    to: runs/landmark
 
 verification:
   package_import:
     status: pass
     ultralytics_in_sys_modules: false
   syntax:
-    command: python -m compileall -q landmark2
+    command: python -m compileall -q landmark
     status: pass
   unit_tests:
-    command: python -m unittest discover -s landmark2/tests -v
+    command: python -m unittest discover -s landmark/tests -v
     status: pass
-    passed: 18
+    passed: 25
     failed: 0
-    duration_seconds: 8.058
+    duration_seconds: 14.2
   dataset:
     status: pass
     labels_validated: 442
@@ -173,8 +176,8 @@ fixed_during_migration:
     cause: The canonical schema mask did not accept the requested local keypoint width.
     fix: class_keypoint_mask now accepts and validates max_keypoints.
   - id: cache-isolation
-    symptom: landmark2 dataset preflight wrote manifests into landmark/.cache.
-    fix: The default cache root is now landmark2/.cache/datasets.
+    symptom: landmark dataset preflight wrote manifests into landmark0/.cache.
+    fix: The default cache root is now landmark/.cache/datasets.
   - id: slim-config-runtime-keys
     symptom: The shared pose dataset path required copy_paste_mode and mask_ratio even when both features were disabled.
     fix: The pose-only default retains required shared-pipeline keys with inert values.
@@ -183,14 +186,14 @@ fixed_during_migration:
     fix: Export flags are set before tracing and the fixed graph is traced once.
   - id: onnxscript-implicit-dependency
     symptom: New PyTorch ONNX export attempted to import onnxscript.
-    fix: landmark2 explicitly uses the stable legacy ONNX exporter with opset 17.
+    fix: landmark explicitly uses the stable legacy ONNX exporter with opset 17.
   - id: external-callback-loading
     symptom: Base lifecycle classes could auto-import optional remote experiment trackers.
     fix: Callbacks are a single local registry with no integration imports.
 
 intentional_differences:
   - >-
-    landmark2 does not expose classify, segment, semantic, OBB, tracking,
+    landmark does not expose classify, segment, semantic, OBB, tracking,
     benchmarking, HUB, or solution APIs.
   - >-
     Dataset input is a local YOLO pose YAML; NDJSON and remote Platform URIs
@@ -199,9 +202,13 @@ intentional_differences:
     Inference accepts native PyTorch checkpoints/modules, TorchScript, and
     ONNX only.
   - >-
-    Legacy landmark checkpoint module paths are aliased only inside the
-    checkpoint-unpickling context; landmark2 never installs a global
+    Legacy landmark0 checkpoint module paths are aliased only inside the
+    checkpoint-unpickling context; landmark never installs a global
     ultralytics module alias during normal import.
+  - >-
+    Checkpoints saved under the temporary landmark2 package name are mapped
+    to landmark modules only during unpickling; application imports must use
+    landmark directly.
   - >-
     The copied neural building-block files still contain upstream classes
     referenced by the YAML parser, even though only the five checked-in model
@@ -209,9 +216,8 @@ intentional_differences:
     and resume parity are validated on production checkpoints.
 
 recommendation:
-  replace_landmark_now: false
+  replace_landmark_now: true
   next_step: >-
-    Run at least one real resume-training job and one validation job from an
-    existing production best.pt checkpoint. If their metrics and checkpoint
-    resume state match, switch imports/CLI from landmark to landmark2 and then
-    remove landmark.
+    The package rename is complete: landmark0 is the archived baseline and
+    landmark is the current implementation. Keep landmark0 only for parity
+    checks and legacy checkpoint migration.

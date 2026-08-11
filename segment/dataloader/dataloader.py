@@ -52,10 +52,6 @@ def is_generic_binary_dataset(base_dir):
     )
 
 def getDataloader(args):
-
-    if args.model in  ["SwinUnet","SegFormer", "MissFormer", "EffiSegNetBN","HiFormer","BEFUnet", "FAT_Net", "SCUNet_plus_plus"]:
-        args.img_size=224
-
     img_size = args.img_size
     aug_strategy = getattr(args, "aug_strategy", "auto")
     resolved_aug_strategy = resolve_aug_strategy(
@@ -119,7 +115,7 @@ def getDataloader(args):
         assert args.num_classes == 9
         db_train = Synapse_dataset(base_dir=args.base_dir, split="train", nclass=args.num_classes,
                                transform=Compose(
-                                   [RandomGenerator_synapse(output_size=[args.img_size, args.img_size])]))
+                                   [RandomGenerator_synapse(output_size=list(args.img_size))]))
         db_val = Synapse_dataset(base_dir=args.base_dir, split="test_vol", nclass=args.num_classes)
     elif "ACDC" in args.base_dir:
         from segment.dataloader.dataset_ACDC import ACDCdataset, RandomGenerator_ACDC
@@ -127,7 +123,7 @@ def getDataloader(args):
         uses_aug_policy = False
         import torchvision
         # donot use val ；use test
-        db_train = ACDCdataset(base_dir=args.base_dir, split="train", transform=torchvision.transforms.Compose([RandomGenerator_ACDC(output_size=[args.img_size, args.img_size])]))
+        db_train = ACDCdataset(base_dir=args.base_dir, split="train", transform=torchvision.transforms.Compose([RandomGenerator_ACDC(output_size=list(args.img_size))]))
         _ = ACDCdataset(base_dir=args.base_dir, split="valid")
         db_val = ACDCdataset(base_dir=args.base_dir, split="test")
     elif 'DSB2018' in args.base_dir:
@@ -203,10 +199,6 @@ def getDataloader(args):
 
 
 def getZeroShotDataloader(args):
-
-    if args.model in  ["SwinUnet","SegFormer", "MissFormer", "EffiSegNetBN","HiFormer","BEFUnet", "FAT_Net", "SCUNet_plus_plus"]:
-        args.img_size=224
-
     img_size = args.img_size
     val_transform = build_val_transform(img_size=img_size)
     if args.zero_shot_dataset_name in ["busi","isic18","tuscui","bus","Benign","malignant", "stare"] or (

@@ -3,7 +3,16 @@ import argparse
 import time
 import traceback
 import re
+import shutil
+import sys
 from pathlib import Path
+
+# Direct ``python segment/main.py`` needs the repository root before shared imports.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from uknee_cli import parse_gpu_ids
 
 cpu_num = 1
 os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
@@ -16,9 +25,9 @@ os.environ['VECLIB_MAXIMUM_THREADS'] = str(cpu_num)
 os.environ['NUMEXPR_NUM_THREADS'] = str(cpu_num)
 
 gpu_parser = argparse.ArgumentParser(add_help=False)
-gpu_parser.add_argument('--gpu', type=str, default="7", help='gpu')
+gpu_parser.add_argument('--gpu', type=parse_gpu_ids, default=[0], help='GPU list, e.g. [0,1]')
 temp_args, _ = gpu_parser.parse_known_args()
-os.environ["CUDA_VISIBLE_DEVICES"] = temp_args.gpu
+os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, temp_args.gpu)) if temp_args.gpu != [-1] else ""
 print(f"Set CUDA_VISIBLE_DEVICES to {os.environ['CUDA_VISIBLE_DEVICES']}")
 
 
@@ -35,13 +44,7 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 import torch.optim as optim
 import csv
 device = torch.device(f'cuda:0' if torch.cuda.is_available() else 'cpu')
-import sys
-from pathlib import Path
-
 # Allow this file to be run directly as well as with ``python -m``.
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 from segment.models import build_model
 import segment.utils.losses as losses
@@ -57,7 +60,15 @@ from segment.utils.training_logs import (
     setup_logger,
 )
 from segment.utils.segment_reporting import SegmentationEvaluator, plot_segmentation_metrics
+from segment.utils.onnx_export import (
+    SUPPORTED_AUTO_EXPORT_MODELS,
+    export_segment_onnx,
+    onnx_filename,
+    segment_preprocess_schema,
+)
 from segment.dataloader.dataloader import getDataloader, getZeroShotDataloader
+from segment.cli import parse_segment_args
+from segment.utils.preprocessing import resolve_target_hw
 import torch.nn.functional as F
 RESULT_COLUMNS = [
     "epoch",
@@ -95,53 +106,8 @@ def seed_torch(seed):
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
-def _str2bool(value):
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "y", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "n", "off"}:
-        return False
-    raise argparse.ArgumentTypeError(f"Expected a boolean value, received: {value}")
-
-
 def parse_arguments():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default="U_Net", help='model')
-    parser.add_argument('--base_dir', type=str, default="./data/busi", help='data base dir')
-    parser.add_argument('--dataset_name', type=str, default="busi", help='dataset_name')
-    parser.add_argument('--train_file_dir', type=str, default="train.txt", help='train_file_dir')
-    parser.add_argument('--val_file_dir', type=str, default="val.txt", help='val_file_dir')
-    parser.add_argument('--base_lr', type=float, default=0.01,
-                        help='segmentation network learning rate')
-    parser.add_argument('--batch_size', type=int, default=8,
-                        help='batch_size per gpu')
-    parser.add_argument('--workers', type=int, default=4, help='DataLoader worker processes')
-    parser.add_argument('--gpu', type=str, default="7", help='gpu')
-    parser.add_argument('--max_epochs', type=int, default=2, help='epoch')
-    parser.add_argument('--seed', type=int, default=2006, help='Reproducibility seed')
-    parser.add_argument('--img_size', type=int, default=256, help='img_size')
-    parser.add_argument('--num_classes', type=int, default=1, help='img_size')
-    parser.add_argument('--input_channel', type=int, default=3, help='img_size')
-    parser.add_argument(
-        '--aug_strategy',
-        type=str,
-        default="auto",
-        help='2D augmentation strategy: auto, none, basic, standard, strong, xray',
-    )
-    parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
-    parser.add_argument('--pretrained_path', type=str, default="", help='Path to custom pretrained weights/checkpoint (.pth)')
-    parser.add_argument('--exp_name', type=str, default="", help='Optional run name; defaults to <model>_<dataset>')
-    parser.add_argument('--output_dir', type=str, default="", help='Run root; defaults to <repo>/runs/segment')
-    parser.add_argument('--pixel_spacing_mm', type=float, default=0.10, help='In-plane pixel spacing used by HD95/ASSD')
-    parser.add_argument('--zero_shot_base_dir', type=str, default="", help='zero_base_dir')
-    parser.add_argument('--zero_shot_dataset_name', type=str, default="", help='zero_shot_dataset_name')
-    parser.add_argument('--do_deeps', type=_str2bool, nargs='?', const=True, default=False, help='Use deep supervision')
-    parser.add_argument('--model_id', type=int, default=0, help='model_id')
-    parser.add_argument('--just_for_test', type=_str2bool, nargs='?', const=True, default=False, help='Only run validation')
-    parser.add_argument('--just_for_zero_shot', type=_str2bool, nargs='?', const=True, default=False, help='Only run zero-shot validation')
-    args = parser.parse_args()
+    args = parse_segment_args()
     try:
         from segment.dataloader.dataset_mesko import infer_mesko_num_classes, is_mesko_dataset
 
@@ -160,7 +126,7 @@ args = parse_arguments()
 
 
 def _requested_gpu_count(gpu_arg):
-    return len([gpu_id.strip() for gpu_id in str(gpu_arg).split(',') if gpu_id.strip()])
+    return len(parse_gpu_ids(gpu_arg))
 
 
 def _unwrap_model(model):
@@ -231,13 +197,20 @@ def _load_model_state_dict(model, state_dict, logger=None):
 
 
 def _validate_runtime_config(args):
-    if args.model == "RWKV_UNet" and int(args.img_size) > 256:
+    height, width = resolve_target_hw(args.img_size)
+    longest_side = max(height, width)
+    if not Path(args.base_dir).is_dir():
+        raise FileNotFoundError(
+            f"Dataset folder does not exist: {args.base_dir}. "
+            "Use an absolute path or /name for <project>/data/name."
+        )
+    if args.model == "RWKV_UNet" and longest_side > 256:
         raise ValueError(
             "RWKV_UNet in this repo only supports img_size <= 256. "
             f"Received img_size={args.img_size}. The custom WKV CUDA kernel is compiled with T_MAX=1024, "
             "so 512x512 inputs overflow the stage attention token limit."
         )
-    if args.model == "RWKV_UNetV2" and int(args.img_size) > 1024:
+    if args.model == "RWKV_UNetV2" and longest_side > 1024:
         raise ValueError(
             "RWKV_UNetV2 uses strip-wise RWKV mixing and supports img_size <= 1024. "
             f"Received img_size={args.img_size}. The custom WKV CUDA kernel is compiled with T_MAX=1024."
@@ -354,6 +327,7 @@ def _save_checkpoint(path, args, model, optimizer, epoch, best_dice, metrics=Non
         'best_dice': best_dice,
         'metrics': convert_to_numpy(metrics or {}),
         'config': vars(args),
+        'preprocess': segment_preprocess_schema(args),
     }
     torch.save(checkpoint, path)
 
@@ -363,9 +337,15 @@ def load_model(args, model_best_or_final="best"):
     exp_save_dir= args.exp_save_dir
     model = build_model(args, input_channel=args.input_channel, num_classes=args.num_classes).to(device)
     if model_best_or_final == "best":
-        candidate_paths = [os.path.join(exp_save_dir, 'best.pt')]
+        candidate_paths = [
+            os.path.join(exp_save_dir, 'weights', 'best.pt'),
+            os.path.join(exp_save_dir, 'best.pt'),  # legacy flat layout
+        ]
     else:
-        candidate_paths = [os.path.join(exp_save_dir, 'last.pt')]
+        candidate_paths = [
+            os.path.join(exp_save_dir, 'weights', 'last.pt'),
+            os.path.join(exp_save_dir, 'last.pt'),  # legacy flat layout
+        ]
 
     model_path = next((path for path in candidate_paths if os.path.exists(path)), None)
     if model_path is None:
@@ -442,25 +422,39 @@ def _safe_run_component(value):
 
 def init_dir(args):
     default_name = f"{_safe_run_component(args.model)}_{_safe_run_component(args.dataset_name)}"
-    run_name = _safe_run_component(args.exp_name) if args.exp_name else default_name
-    output_root = Path(args.output_dir).expanduser().resolve() if args.output_dir else REPO_ROOT / "runs" / "segment"
-    exp_save_path = output_root if output_root.name == run_name else output_root / run_name
-    exp_save_path.mkdir(parents=True, exist_ok=True)
+    run_name = _safe_run_component(args.name) if args.name else default_name
+    output_root = Path(args.output_dir).expanduser().resolve() if args.output_dir else Path(args.project) / "runs"
+    output_root.mkdir(parents=True, exist_ok=True)
+    exp_save_path = output_root / run_name
+    exp_save_path.mkdir(parents=True, exist_ok=bool(args.exist_ok))
+    weights_path = exp_save_path / "weights"
+    weights_path.mkdir(exist_ok=True)
     samples_path = exp_save_path / "samples"
     samples_path.mkdir(exist_ok=True)
 
-    args.exp_name = run_name
+    args.name = args.exp_name = run_name
     args.exp_save_dir = str(exp_save_path)
+    args.weights_dir = str(weights_path)
     args.samples_dir = str(samples_path)
+
+    if args.resume:
+        for filename in ("best.pt", "last.pt"):
+            legacy_path = exp_save_path / filename
+            destination = weights_path / filename
+            if legacy_path.is_file() and not destination.exists():
+                shutil.copy2(legacy_path, destination)
 
     if not args.resume and not args.just_for_test:
         for filename in (
             "best.pt", "last.pt", "results.csv", "summary.yaml",
             "dashboard_segmentation.png", "segmentation_metrics.png",
+            "segment_dashboard.png", "segment_metrics.png", onnx_filename(args.model),
         ):
             artifact = exp_save_path / filename
             if artifact.is_file():
                 artifact.unlink()
+        for filename in ("best.pt", "last.pt", onnx_filename(args.model)):
+            (weights_path / filename).unlink(missing_ok=True)
         for pattern in ("val_samples_e*.png", "segment_sample_e*.png", "segment_sample_eval.png"):
             for artifact in samples_path.glob(pattern):
                 artifact.unlink()
@@ -525,7 +519,7 @@ def validate(args,logger,model):
     criterion, _ = _build_criterion(args)
     indices = SegmentationEvaluator.fixed_sample_indices(len(valloader.dataset), seed=2006)
     val_loss, evaluator, snapshot = _validate_epoch(args, model, valloader, criterion, indices)
-    plot_segmentation_metrics(snapshot, Path(args.exp_save_dir) / "segmentation_metrics.png")
+    plot_segmentation_metrics(snapshot, Path(args.exp_save_dir) / "segment_metrics.png")
     evaluator.save_samples(Path(args.samples_dir) / "segment_sample_eval.png", epoch=0)
     metrics = {
         "val/loss": val_loss,
@@ -555,6 +549,8 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     optimizer, base_lr, optimizer_name = _build_optimizer(args, model, logger)
     criterion, criterion_name = _build_criterion(args)
     run_dir = Path(exp_save_dir)
+    weights_dir = run_dir / "weights"
+    weights_dir.mkdir(parents=True, exist_ok=True)
     args.effective_lr = base_lr
     args.optimizer = optimizer_name
     args.criterion = criterion_name
@@ -569,9 +565,14 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
         state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint)) if isinstance(checkpoint, dict) else checkpoint
         _load_model_state_dict(model, state_dict, logger=logger)
     elif args.resume:
-        checkpoint_path = run_dir / "last.pt"
-        if not checkpoint_path.is_file():
-            raise FileNotFoundError(f"Cannot resume: '{checkpoint_path}' does not exist")
+        checkpoint_path = next(
+            (path for path in (weights_dir / "last.pt", run_dir / "last.pt") if path.is_file()),
+            None,
+        )
+        if checkpoint_path is None:
+            raise FileNotFoundError(
+                f"Cannot resume: neither '{weights_dir / 'last.pt'}' nor legacy '{run_dir / 'last.pt'}' exists"
+            )
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         _load_model_state_dict(model, checkpoint["state_dict"], logger=logger)
         if checkpoint.get("optimizer") is not None:
@@ -638,14 +639,14 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
         history_rows.append(epoch_row)
         history_writer.append(epoch_row)
 
-        _save_checkpoint(run_dir / "last.pt", args, model, optimizer, epoch_id, max(best_dice, snapshot.dice), epoch_row)
+        _save_checkpoint(weights_dir / "last.pt", args, model, optimizer, epoch_id, max(best_dice, snapshot.dice), epoch_row)
         if snapshot.dice > best_dice:
             best_dice = snapshot.dice
             best_epoch = epoch_id
-            _save_checkpoint(run_dir / "best.pt", args, model, optimizer, epoch_id, best_dice, epoch_row)
+            _save_checkpoint(weights_dir / "best.pt", args, model, optimizer, epoch_id, best_dice, epoch_row)
 
         evaluator.save_samples(run_dir / "samples" / f"segment_sample_e{epoch_id}.png", epoch_id)
-        plot_segmentation_metrics(snapshot, run_dir / "segmentation_metrics.png")
+        plot_segmentation_metrics(snapshot, run_dir / "segment_metrics.png")
         plot_training_dashboard(
             log_dir=run_dir,
             history_rows=history_rows,
@@ -658,7 +659,7 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
             ranking_key="val/dice",
             maximize=True,
             top_k=3,
-            filename="dashboard_segmentation.png",
+            filename="segment_dashboard.png",
             model_name=args.model,
             title=f"{args.model} | {args.dataset_name}",
             elapsed_seconds=time.time() - training_started,
@@ -673,28 +674,66 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     elapsed_seconds = previous_duration + time.time() - training_started
     best_row = next((row for row in history_rows if int(row["epoch"]) == best_epoch), {})
     final_row = history_rows[-1] if history_rows else {}
+    preprocess_schema = segment_preprocess_schema(args)
+    if not args.auto_export_onnx:
+        onnx_record = {"status": "disabled", "path": None}
+    elif args.model not in SUPPORTED_AUTO_EXPORT_MODELS:
+        onnx_record = {
+            "status": "not_supported",
+            "path": None,
+            "supported_models": sorted(SUPPORTED_AUTO_EXPORT_MODELS),
+        }
+        logger.info(
+            "Automatic ONNX export is currently scoped to %s; skipping model %s.",
+            sorted(SUPPORTED_AUTO_EXPORT_MODELS),
+            args.model,
+        )
+    else:
+        best_checkpoint_path = weights_dir / "best.pt"
+        if not best_checkpoint_path.is_file():
+            raise FileNotFoundError(f"Cannot export ONNX because best checkpoint is missing: {best_checkpoint_path}")
+        checkpoint = torch.load(best_checkpoint_path, map_location=device, weights_only=False)
+        _load_model_state_dict(model, checkpoint["state_dict"], logger=logger)
+        onnx_path = weights_dir / onnx_filename(args.model)
+        logger.info("Exporting best checkpoint to ONNX: %s", onnx_path)
+        onnx_record = export_segment_onnx(
+            model,
+            args,
+            onnx_path,
+            class_names=_dataset_class_names(valloader.dataset),
+            validate=True,
+        )
+        onnx_record["path"] = onnx_path.relative_to(run_dir).as_posix()
+        logger.info(
+            "ONNX export ready: %s (max_abs_diff=%s)",
+            onnx_path,
+            onnx_record["parity"]["max_abs_diff"],
+        )
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "task": "segmentation",
         "model": {
             "name": args.model,
             **model_paper_profile(
                 model,
-                (1, int(args.input_channel), int(args.img_size), int(args.img_size)),
+                (1, int(args.input_channel), *resolve_target_hw(args.img_size)),
             ),
         },
         "dataset": {
             "name": args.dataset_name,
+            "path": str(Path(args.base_dir).resolve()),
             "train_manifest": args.train_file_dir,
             "validation_manifest": args.val_file_dir,
             "classes": int(args.num_classes),
             "pixel_spacing_mm": float(args.pixel_spacing_mm),
         },
+        "preprocessing": preprocess_schema,
         "training": {
             "epochs_requested": int(args.max_epochs),
             "epochs_completed": int(final_row.get("epoch", start_epoch)),
             "batch_size": int(args.batch_size),
             "seed": int(args.seed),
+            "gpu_ids": list(args.gpu_ids),
             "optimizer": optimizer_name,
             "criterion": criterion_name,
             "initial_learning_rate": float(base_lr),
@@ -712,14 +751,23 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
             "final": final_row,
             "distance_unit": "mm",
         },
+        "deployment": {
+            "auto_export_onnx": bool(args.auto_export_onnx),
+            "onnx": onnx_record,
+        },
         "artifacts": {
-            "best_checkpoint": "best.pt",
-            "last_checkpoint": "last.pt",
+            "best_checkpoint": "weights/best.pt",
+            "last_checkpoint": "weights/last.pt",
             "metrics": "results.csv",
+            "dashboard": "segment_dashboard.png",
+            "metric_report": "segment_metrics.png",
             "samples": "samples/segment_sample_e{epoch}.png",
             "samples_per_epoch": min(4, len(valloader.dataset)),
             "sample_seed": 2006,
             "sample_indices": fixed_indices,
+            "sample_display_height": 512,
+            "sample_display_width": "preserve_aspect_ratio",
+            "onnx_model": onnx_record.get("path"),
         },
     }
     save_summary_yaml(run_dir, summary)

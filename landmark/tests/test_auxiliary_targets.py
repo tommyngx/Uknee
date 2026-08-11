@@ -5,9 +5,9 @@ import unittest
 import torch
 import landmark  # noqa: F401 - bootstrap the pinned backend before absolute imports
 
-from ultralytics.utils.oa26.heatmap import extract_canonical_image_keypoints
-from ultralytics.utils.oa26.loss import OA26HeatmapPoseLoss
-from ultralytics.utils.oa26_region_refine.region_schema import class_path_masks
+from landmark.core.targets import extract_canonical_image_keypoints
+from landmark.core.loss import OA26HeatmapPoseLoss
+from landmark.data.schema import class_path_masks
 
 
 class AuxiliaryTargetTests(unittest.TestCase):

@@ -7,11 +7,12 @@ import numpy as np
 import torch
 from PIL import Image
 
-
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 if str(DEFAULT_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(DEFAULT_REPO_ROOT))
+
+from segment.utils.preprocessing import letterbox_array, resolve_target_hw, restore_letterbox_mask
 
 try:
     from segment.dataloader.augment import IMAGENET_MEAN as TRAIN_RGB_MEAN
@@ -89,8 +90,21 @@ def _should_use_imagenet_normalization(config) -> bool:
     return "kvasir" in dataset_name or "kvasir" in base_dir
 
 
-def _resolve_preprocess_config(config):
+def _resolve_preprocess_config(config, serialized_spec=None):
     channels = int(getattr(config, "input_channel", 3))
+    if serialized_spec:
+        expected_color = "RGB" if channels == 3 else "GRAYSCALE"
+        color_space = str(serialized_spec.get("color_space", "")).upper()
+        if color_space != expected_color:
+            raise ValueError(
+                f"Checkpoint preprocess color_space={color_space!r} does not match input_channel={channels} "
+                f"({expected_color})."
+            )
+        normalization = serialized_spec.get("normalization", {})
+        mean = _parse_channel_stats(normalization.get("mean", [0.0] * channels), channels, "normalize_mean")
+        std = _parse_channel_stats(normalization.get("std", [1.0] * channels), channels, "normalize_std")
+        return {"mean": mean, "std": std, "source": "checkpoint_preprocess"}
+
     normalize_mean = _parse_channel_stats(
         getattr(config, "normalize_mean", None),
         channels=channels,
@@ -154,7 +168,8 @@ def load_model(weight_path, repo_root=None, device="auto", threshold=0.5):
     cfg = SimpleNamespace(**cfg_dict)
     if "RWKV" in str(cfg.model) and device.type != "cuda":
         raise RuntimeError("RWKV models in this repo require CUDA/GPU for inference.")
-    preprocess = _resolve_preprocess_config(cfg)
+    preprocess_spec = ckpt.get("preprocess") or {}
+    preprocess = _resolve_preprocess_config(cfg, serialized_spec=preprocess_spec)
 
     model = build_model(
         cfg,
@@ -163,7 +178,7 @@ def load_model(weight_path, repo_root=None, device="auto", threshold=0.5):
     ).to(device)
 
     state_dict = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
-    model.load_state_dict(state_dict, strict=False)
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
 
     return {
@@ -173,6 +188,7 @@ def load_model(weight_path, repo_root=None, device="auto", threshold=0.5):
         "threshold": float(threshold),
         "weight_path": str(weight_path),
         "preprocess": preprocess,
+        "preprocess_spec": preprocess_spec,
     }
 
 
@@ -184,14 +200,22 @@ def predict_mask(runtime, image_input, threshold=None, return_pil=True, resize_b
     threshold = runtime["threshold"] if threshold is None else float(threshold)
 
     image = _to_pil_image(image_input)
-    original_size = image.size
+    preprocess_spec = runtime.get("preprocess_spec") or {}
+    network_shape = preprocess_spec.get("network_input_shape")
+    target_hw = (
+        (int(network_shape[-2]), int(network_shape[-1]))
+        if isinstance(network_shape, (list, tuple)) and len(network_shape) == 4
+        else resolve_target_hw(cfg.img_size)
+    )
 
     if int(cfg.input_channel) == 1:
-        resized = image.convert("L").resize((int(cfg.img_size), int(cfg.img_size)), Image.BILINEAR)
-        image_array = np.array(resized, dtype=np.float32)[..., None] / 255.0
+        source_array = np.array(image.convert("L"), dtype=np.uint8)
+        letterboxed, spatial_transform = letterbox_array(source_array, target_hw)
+        image_array = letterboxed.astype(np.float32)[..., None] / 255.0
     else:
-        resized = image.convert("RGB").resize((int(cfg.img_size), int(cfg.img_size)), Image.BILINEAR)
-        image_array = np.array(resized, dtype=np.float32) / 255.0
+        source_array = np.array(image.convert("RGB"), dtype=np.uint8)
+        letterboxed, spatial_transform = letterbox_array(source_array, target_hw)
+        image_array = letterboxed.astype(np.float32) / 255.0
 
     image_array = _normalize_image_array(image_array, preprocess)
 
@@ -207,12 +231,11 @@ def predict_mask(runtime, image_input, threshold=None, return_pil=True, resize_b
             mask = (probabilities >= threshold).astype(np.uint8) * 255
         else:
             prediction = torch.argmax(output, dim=1)[0].detach().cpu().numpy().astype(np.uint8)
-            max_label = max(int(output.shape[1] - 1), 1)
-            mask = (prediction * (255 // max_label)).astype(np.uint8)
+            mask = prediction
 
-    mask_image = Image.fromarray(mask)
     if resize_back:
-        mask_image = mask_image.resize(original_size, Image.NEAREST)
+        mask = restore_letterbox_mask(mask, spatial_transform)
+    mask_image = Image.fromarray(mask)
 
     if return_pil:
         return mask_image

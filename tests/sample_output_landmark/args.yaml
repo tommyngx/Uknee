@@ -1,4 +1,14 @@
-model: yolo26-pose-v1
-epochs: 150
-lr: 0.001
+model: yolo26-pose-sample.yaml
+data: Ref/yolo_mesko4GF2/data.yaml
+epochs: 3
+imgsz:
+- 512
+- 320
+batch: 16
+lr0: 0.001
 seed: 2006
+auto_export_onnx: true
+fliplr: 0.0
+flipud: 0.0
+erasing: 0.0
+bgr: 0.0

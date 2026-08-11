@@ -1,0 +1,17 @@
+# Full-frame ViTPose-B heatmap model for the canonical 129 landmarks.
+landmark_family: heatmap
+architecture: vitpose_b
+input_channels: 3
+num_landmarks: 129
+image_size: 640
+patch_size: 16
+embed_dim: 768
+depth: 12
+attention_heads: 12
+mlp_ratio: 4
+dropout: 0.0
+heatmap_stride: 4
+heatmap_sigma: 1.5
+coordinate_loss_gain: 1.0
+nc: 4
+kpt_shape: [51, 3]

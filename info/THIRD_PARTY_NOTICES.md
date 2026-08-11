@@ -1,9 +1,9 @@
 # Third-party notices
 
 Uknee includes a vendored snapshot of Ultralytics 8.4.87 under
-`landmark/_vendor/ultralytics`. That code is distributed under AGPL-3.0 and
+`landmark0/_vendor/ultralytics`. That code is distributed under AGPL-3.0 and
 retains its original copyright and license headers. See
-`landmark/_vendor/ultralytics/VENDORED.md` for provenance and the local change
+`landmark0/_vendor/ultralytics/VENDORED.md` for provenance and the local change
 list.
 
 The repository also contains work originally distributed under Apache-2.0.

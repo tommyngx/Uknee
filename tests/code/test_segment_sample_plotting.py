@@ -1,162 +1,235 @@
 from __future__ import annotations
 
-import csv
+import shutil
 import sys
-import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-# Ensure the repository root and segment package are importable.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-for p in (str(REPO_ROOT),):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import cv2
 import numpy as np
 import torch
 
 from segment.utils.segment_reporting import SegmentationEvaluator, plot_segmentation_metrics
-from segment.utils.training_logs import EpochLogWriter, plot_training_dashboard, save_training_args
+from segment.utils.onnx_export import export_segment_onnx, onnx_filename
+from segment.utils.training_logs import EpochLogWriter, plot_training_dashboard, save_summary_yaml, save_training_args
 
 
-def load_real_mesko_images(dataset_root: Path, count: int = 4, seed: int = 2006) -> tuple[torch.Tensor, torch.Tensor]:
-    """Load up to `count` real knee X-ray images and matching 11-class masks from Ref/unet_meskoseg_9class."""
-    img_dir = dataset_root / "images" / "train"
+SAMPLE_EPOCHS = 3
+SAMPLE_SEED = 2006
+RESULT_COLUMNS = [
+    "epoch", "train/loss", "val/loss", "val/dice", "val/iou",
+    "val/hd95", "val/assd", "val/sens", "val/prec",
+]
+CLASS_NAMES = [
+    "Femur", "Tibia", "Fibula", "Overlap", "Patella",
+    "Lat Fem Osteophyte", "Med Fem Osteophyte", "Lat Tib Osteophyte",
+    "Med Tib Osteophyte", "Tibial Plateau",
+]
+
+
+class _ToySegmentExport(torch.nn.Module):
+    """Small valid graph used only to demonstrate the generated ONNX artifact."""
+
+    def __init__(self, classes: int = 11):
+        super().__init__()
+        self.head = torch.nn.Conv2d(3, classes, kernel_size=1)
+
+    def forward(self, images):
+        return self.head(images)
+
+
+def load_real_mesko_images(
+    dataset_root: Path, count: int = 4, seed: int = SAMPLE_SEED
+) -> tuple[list[torch.Tensor], list[torch.Tensor], list[int]]:
+    """Load four deterministic real X-rays and matching 11-class masks."""
+    image_dir = dataset_root / "images" / "train"
     mask_dir = dataset_root / "masks" / "train"
-    if not img_dir.exists() or not mask_dir.exists():
-        images = torch.rand(count, 3, 256, 256)
-        targets = torch.zeros(count, 256, 256, dtype=torch.long)
-        return images, targets
-
-    all_img_paths = sorted(img_dir.glob("*.png"))
-    rng = np.random.RandomState(seed)
-    if len(all_img_paths) > count:
-        indices = sorted(rng.choice(len(all_img_paths), size=count, replace=False))
-        img_paths = [all_img_paths[i] for i in indices]
-    else:
-        img_paths = all_img_paths[:count]
-    images_list = []
-    targets_list = []
-
-    for img_path in img_paths:
-        mask_path = mask_dir / img_path.name
-        img_bgr = cv2.imread(str(img_path))
-        mask_raw = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
-        if img_bgr is None or mask_raw is None:
+    paths = sorted(image_dir.glob("*.png"))
+    if not paths or not mask_dir.is_dir():
+        raise RuntimeError("The segment sample generator requires the MESKO images and masks")
+    rng = np.random.default_rng(seed)
+    indices = sorted(rng.choice(len(paths), size=min(count, len(paths)), replace=False).tolist())
+    images, targets, valid_indices = [], [], []
+    for dataset_index in indices:
+        path = paths[dataset_index]
+        image_bgr = cv2.imread(str(path))
+        mask = cv2.imread(str(mask_dir / path.name), cv2.IMREAD_UNCHANGED)
+        if image_bgr is None or mask is None:
             continue
-
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        h, w = img_rgb.shape[:2]
-        new_h = 512
-        new_w = int(w * (512.0 / h))
-        img_resized = cv2.resize(img_rgb, (320, 512), interpolation=cv2.INTER_AREA)
-        mask_resized = cv2.resize(mask_raw, (320, 512), interpolation=cv2.INTER_NEAREST)
-
-        img_tensor = torch.from_numpy(img_resized.transpose(2, 0, 1)).float() / 255.0
-        mask_tensor = torch.from_numpy(mask_resized.astype(np.int64))
-
-        images_list.append(img_tensor)
-        targets_list.append(mask_tensor)
-
-    if not images_list:
-        images_list = [torch.rand(3, 512, 320) for _ in range(count)]
-        targets_list = [torch.zeros(512, 320, dtype=torch.long) for _ in range(count)]
-
-    return torch.stack(images_list), torch.stack(targets_list)
+        source_height, source_width = image_bgr.shape[:2]
+        fixed_height = 512
+        relative_width = max(1, round(source_width * fixed_height / source_height))
+        size = (relative_width, fixed_height)
+        image = cv2.resize(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB), size, interpolation=cv2.INTER_AREA)
+        mask = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
+        images.append(torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0)
+        targets.append(torch.from_numpy(mask.astype(np.int64)))
+        valid_indices.append(dataset_index)
+    if len(images) != count:
+        raise RuntimeError(f"Expected {count} valid MESKO samples, found {len(images)}")
+    return images, targets, valid_indices
 
 
-class SegmentationSamplePlottingTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.tests_dir = Path(__file__).resolve().parent.parent
-        cls.ref_dataset = cls.tests_dir.parent / "Ref" / "unet_meskoseg_9class"
+def _history_rows() -> list[dict]:
+    rows = []
+    for epoch in range(1, SAMPLE_EPOCHS + 1):
+        row = {
+            "epoch": epoch,
+            "train/loss": 0.72 / epoch + 0.04,
+            "val/loss": 0.78 / epoch + 0.05,
+            "val/dice": min(0.70 + 0.085 * epoch, 0.98),
+            "val/iou": min(0.58 + 0.105 * epoch, 0.95),
+            "val/hd95": 6.6 / epoch,
+            "val/assd": 3.0 / epoch,
+            "val/sens": min(0.72 + 0.08 * epoch, 0.98),
+            "val/prec": min(0.70 + 0.085 * epoch, 0.98),
+        }
+        rows.append({key: round(value, 6) if isinstance(value, float) else value for key, value in row.items()})
+    return rows
 
-    def test_01_plot_segmentation_val_samples_and_metrics(self):
-        images, targets = load_real_mesko_images(self.ref_dataset, count=4)
-        num_classes = 11
 
-        # Generate realistic logits with slight random noise for validation predictions
-        logits = torch.full((len(images), num_classes, 512, 320), -5.0)
-        for b in range(len(images)):
-            t_mask = targets[b]
-            logits[b].scatter_(0, t_mask.unsqueeze(0), 8.0)
-            noise = torch.randn_like(logits[b]) * 0.5
-            logits[b] += noise
+def generate_sample_output(output_dir: Path | None = None) -> Path:
+    """Generate one internally consistent segmentation run for manual inspection."""
+    output_dir = output_dir or REPO_ROOT / "tests" / "sample_output_segment"
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    samples_dir = output_dir / "samples"
+    weights_dir = output_dir / "weights"
+    samples_dir.mkdir(parents=True)
+    weights_dir.mkdir()
 
-        evaluator = SegmentationEvaluator(
-            num_classes,
-            pixel_spacing_mm=0.10,
-            class_names=[
-                "Femur", "Tibia", "Fibula", "Overlap", "Patella",
-                "Lat Fem Osteophyte", "Med Fem Osteophyte", "Lat Tib Osteophyte",
-                "Med Tib Osteophyte", "Tibial Plateau"
-            ],
-            sample_indices=list(range(len(images))),
-            seed=2006
-        )
+    rows = _history_rows()
+    writer = EpochLogWriter(output_dir, "results", fieldnames=RESULT_COLUMNS, write_auxiliary=False)
+    for row in rows:
+        writer.append(row)
 
-        evaluator.update(logits, targets, images=images, start_index=0)
-        snapshot = evaluator.snapshot()
+    images, targets, dataset_indices = load_real_mesko_images(REPO_ROOT / "Ref" / "unet_meskoseg_9class")
+    evaluator = SegmentationEvaluator(
+        11,
+        pixel_spacing_mm=0.1,
+        class_names=CLASS_NAMES,
+        sample_indices=range(4),
+        seed=SAMPLE_SEED,
+    )
+    for sample_index, (image, target) in enumerate(zip(images, targets)):
+        height, width = target.shape
+        logits = torch.full((1, 11, height, width), -5.0)
+        logits.scatter_(1, target[None, None], 8.0)
+        evaluator.update(logits, target[None], images=image[None], start_index=sample_index)
+    snapshot = evaluator.snapshot()
+    for epoch in range(1, SAMPLE_EPOCHS + 1):
+        evaluator.save_samples(samples_dir / f"segment_sample_e{epoch}.png", epoch=epoch)
 
-        # 1. Save validation samples grid
-        val_samples_png = self.tests_dir / "segment_samples.png"
-        evaluator.save_samples(val_samples_png, epoch=150)
-        self.assertTrue(val_samples_png.is_file())
-        self.assertGreater(val_samples_png.stat().st_size, 10000)
+    plot_segmentation_metrics(snapshot, output_dir / "segment_metrics.png")
+    evaluator.save_samples(output_dir / "segment_samples.png", epoch=SAMPLE_EPOCHS)
+    plot_training_dashboard(
+        output_dir,
+        rows,
+        loss_keys=[("train/loss", "Training Loss"), ("val/loss", "Validation Loss")],
+        metric_keys=[
+            ("val/dice", "Val Dice"), ("val/iou", "Val IoU"),
+            ("val/hd95", "HD95"), ("val/assd", "ASSD"),
+            ("val/sens", "Sensitivity"), ("val/prec", "Precision"),
+        ],
+        ranking_key="val/dice",
+        maximize=True,
+        filename="segment_dashboard.png",
+        model_name="RWKV_UNetV6-sample",
+        title="RWKV_UNetV6-sample | unet_meskoseg_9class",
+        elapsed_seconds=36.0,
+    )
 
-        # 2. Save evaluation metrics dashboard
-        metrics_png = self.tests_dir / "segment_metrics.png"
-        plot_segmentation_metrics(snapshot, metrics_png)
-        self.assertTrue(metrics_png.is_file())
-        self.assertGreater(metrics_png.stat().st_size, 10000)
+    args = {
+        "model": "RWKV_UNetV6", "dataset_name": "unet_meskoseg_9class",
+        "max_epochs": SAMPLE_EPOCHS, "img_size": 256, "input_channel": 3,
+        "num_classes": 11, "batch_size": 8, "base_lr": 0.001,
+        "pixel_spacing_mm": 0.1, "seed": SAMPLE_SEED, "auto_export_onnx": True,
+    }
+    save_training_args(output_dir, args, filename="args.yaml")
+    preprocess = {
+        "schema_version": 1, "source_spatial_shape": "dynamic",
+        "network_input_shape": [1, 3, 256, 256], "layout": "NCHW",
+        "dtype": "float32", "color_space": "RGB", "value_range": [0.0, 1.0],
+        "normalization": {"mode": "scale_0_1", "mean": [0.0] * 3, "std": [1.0] * 3},
+        "resize": {"mode": "letterbox", "keep_aspect_ratio": True, "target_height": 256,
+                   "target_width": 256, "pad_value": 0, "placement": "center"},
+    }
+    checkpoint = {
+        "epoch": SAMPLE_EPOCHS, "state_dict": {}, "metrics": rows[-1],
+        "config": args, "preprocess": preprocess,
+    }
+    torch.save(checkpoint, weights_dir / "last.pt")
+    torch.save(checkpoint, weights_dir / "best.pt")
+    onnx_path = weights_dir / onnx_filename(args["model"])
+    onnx_record = export_segment_onnx(
+        _ToySegmentExport().eval(),
+        SimpleNamespace(**args),
+        onnx_path,
+        class_names=["Background", *CLASS_NAMES],
+    )
+    onnx_record["path"] = onnx_path.relative_to(output_dir).as_posix()
 
-    def test_02_plot_segmentation_training_dashboard(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            history_rows = []
-            for ep in range(1, 31):
-                tr_loss = 0.8 * np.exp(-ep / 8) + 0.05
-                va_loss = 0.85 * np.exp(-ep / 8) + 0.07 + np.random.uniform(-0.01, 0.01)
-                val_dice = 0.25 + 0.72 * (1 - np.exp(-ep / 6))
-                val_iou = 0.15 + 0.70 * (1 - np.exp(-ep / 6))
-                val_hd95 = 25.0 * np.exp(-ep / 7) + 1.8
-                val_assd = 12.0 * np.exp(-ep / 7) + 0.8
-                val_sens = 0.3 + 0.67 * (1 - np.exp(-ep / 5))
-                val_prec = 0.35 + 0.63 * (1 - np.exp(-ep / 5))
+    summary = {
+        "schema_version": 2,
+        "task": "segmentation",
+        "model": {
+            "name": args["model"], "parameters": 2_450_000,
+            "trainable_parameters": 2_450_000, "gflops": 12.84,
+            "gflops_convention": "2 x MACs for one forward pass",
+            "input_shape": [1, 3, 256, 256],
+        },
+        "dataset": {
+            "name": args["dataset_name"], "train_manifest": "train.txt",
+            "validation_manifest": "val.txt", "classes": 11, "pixel_spacing_mm": 0.1,
+        },
+        "preprocessing": preprocess,
+        "training": {
+            "epochs_requested": SAMPLE_EPOCHS, "epochs_completed": SAMPLE_EPOCHS,
+            "batch_size": 8, "seed": SAMPLE_SEED, "optimizer": "AdamW",
+            "criterion": "DiceCELoss", "initial_learning_rate": 0.001,
+            "duration_seconds": 36.0, "duration_hours": 0.01,
+            "seconds_per_epoch": 12.0, "device": "cuda:0",
+            "torch_version": str(torch.__version__),
+        },
+        "performance": {
+            "selection_metric": "val/dice", "selection_mode": "max",
+            "best_epoch": SAMPLE_EPOCHS, "best": rows[-1], "final": rows[-1],
+            "distance_unit": "mm",
+        },
+        "deployment": {
+            "auto_export_onnx": True,
+            "onnx": onnx_record,
+        },
+        "artifacts": {
+            "best_checkpoint": "weights/best.pt", "last_checkpoint": "weights/last.pt",
+            "metrics": "results.csv", "dashboard": "segment_dashboard.png",
+            "metric_report": "segment_metrics.png",
+            "samples": "samples/segment_sample_e{epoch}.png",
+            "samples_per_epoch": 4, "sample_seed": SAMPLE_SEED,
+            "sample_indices": dataset_indices,
+            "sample_display_height": 512,
+            "sample_display_width": "preserve_aspect_ratio",
+            "onnx_model": onnx_record["path"],
+        },
+    }
+    save_summary_yaml(output_dir, summary)
+    return output_dir
 
-                row = {
-                    "epoch": ep,
-                    "train/loss": tr_loss,
-                    "val/loss": va_loss,
-                    "val/dice": val_dice,
-                    "val/iou": val_iou,
-                    "val/hd95": val_hd95,
-                    "val/assd": val_assd,
-                    "val/sens": val_sens,
-                    "val/prec": val_prec,
-                }
-                history_rows.append(row)
 
-            dashboard_png = self.tests_dir / "segment_dashboard.png"
-            plot_path, top_epochs = plot_training_dashboard(
-                log_dir=tmp_path,
-                history_rows=history_rows,
-                loss_keys=[("train/loss", "Training Loss"), ("val/loss", "Validation Loss")],
-                metric_keys=[
-                    ("val/dice", "Val Dice"), ("val/iou", "Val IoU"),
-                    ("val/hd95", "Val HD95 (mm)"), ("val/assd", "Val ASSD (mm)"),
-                    ("val/sens", "Sensitivity"), ("val/prec", "Precision"),
-                ],
-                ranking_key="val/dice",
-                maximize=True,
-                filename=str(dashboard_png),
-                model_name="CMUNeXt-MESKO5Seg",
-                elapsed_seconds=320.0,
-            )
-
-            self.assertTrue(dashboard_png.is_file())
-            self.assertGreater(dashboard_png.stat().st_size, 10000)
+class SegmentationSampleOutputTests(unittest.TestCase):
+    def test_generate_sample_output(self):
+        output_dir = generate_sample_output()
+        self.assertFalse((output_dir / "best.pt").exists())
+        self.assertFalse((output_dir / "last.pt").exists())
+        self.assertTrue((output_dir / "weights" / "best.pt").is_file())
+        self.assertTrue((output_dir / "weights" / "last.pt").is_file())
+        self.assertTrue((output_dir / "weights" / "rwkv_unetv6.onnx").is_file())
+        self.assertEqual(len(list((output_dir / "samples").glob("segment_sample_e*.png"))), SAMPLE_EPOCHS)
 
 
 if __name__ == "__main__":

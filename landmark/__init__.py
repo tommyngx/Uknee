@@ -1,11 +1,9 @@
-"""Standalone knee pose training built on a pinned Ultralytics backend."""
+"""Compact, self-contained MESKO4GF2 landmark pose package."""
 
-from ._vendor.bootstrap import load_vendored_ultralytics
+from __future__ import annotations
 
-# This must happen before importing modules that use absolute ``ultralytics``
-# imports. It also makes accidental use of a pip installation fail loudly.
-load_vendored_ultralytics()
+__version__ = "2.0.0"
 
 from .utils.api import KneePose
 
-__all__ = ["KneePose", "load_vendored_ultralytics"]
+__all__ = ["KneePose", "__version__"]

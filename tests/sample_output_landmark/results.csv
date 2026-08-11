@@ -1,2 +1,4 @@
-epoch,train/loss,val/loss,metrics/MRE,metrics/PCK2,metrics/HD95,metrics/mAP50-95(B)
-138,0.035,0.042,1.12,0.985,1.85,0.942
+epoch,train/loss,val/loss,metrics/MRE,metrics/PCK2,metrics/PCK4,metrics/PCK8,metrics/HD95,metrics/mAP50-95(B),metrics/MRE_femur,metrics/MRE_tibia,metrics/MRE_fibula,metrics/MRE_patella
+1,0.45,0.52,4.2,0.81,0.875,0.935,7.5,0.72,3.78,4.41,5.04,3.57
+2,0.24,0.28,2.1,0.9,0.93,0.96,3.75,0.82,1.89,2.205,2.52,1.785
+3,0.17,0.2,1.4,0.99,0.985,0.985,2.5,0.92,1.26,1.47,1.68,1.19

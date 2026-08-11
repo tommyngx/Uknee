@@ -1,10 +1,15 @@
 import inspect
+import os
 from typing import List
+
+os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 
 import albumentations as A
 import cv2
 import numpy as np
 from albumentations.pytorch import ToTensorV2
+
+from segment.utils.preprocessing import letterbox_array, resolve_target_hw
 
 AVAILABLE_AUG_STRATEGIES = ("none", "basic", "standard", "strong", "xray", "auto")
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -186,28 +191,38 @@ def resolve_aug_strategy(
     return "standard"
 
 
-def _resize(img_size: int):
-    return _make_transform(
-        A.Resize,
-        height=img_size,
-        width=img_size,
-        interpolation=cv2.INTER_LINEAR,
-        mask_interpolation=cv2.INTER_NEAREST,
-    )
+class LetterboxResize(A.DualTransform):
+    """Deterministically letterbox image and mask to a fixed HxW canvas."""
+
+    def __init__(self, height: int, width: int, p: float = 1.0):
+        super().__init__(p=p)
+        self.height = int(height)
+        self.width = int(width)
+
+    def apply(self, img, **params):
+        return letterbox_array(
+            img,
+            (self.height, self.width),
+            interpolation=cv2.INTER_LINEAR,
+            pad_value=0,
+        )[0]
+
+    def apply_to_mask(self, mask, **params):
+        return letterbox_array(
+            mask,
+            (self.height, self.width),
+            interpolation=cv2.INTER_NEAREST,
+            pad_value=0,
+        )[0]
+
+    def get_transform_init_args_names(self):
+        return ("height", "width")
 
 
-def _random_flip(p: float = 0.5):
-    # `A.Flip` was removed in newer albumentations releases.
-    if hasattr(A, "Flip"):
-        return A.Flip(p=p)
-    return A.OneOf(
-        [
-            A.HorizontalFlip(p=1.0),
-            A.VerticalFlip(p=1.0),
-            A.Compose([A.HorizontalFlip(p=1.0), A.VerticalFlip(p=1.0)]),
-        ],
-        p=p,
-    )
+def _resize(img_size):
+    """Letterbox to a fixed canvas without stretching medical anatomy."""
+    height, width = resolve_target_hw(img_size)
+    return LetterboxResize(height, width, p=1.0)
 
 
 def _make_transform(transform_cls, **kwargs):
@@ -294,7 +309,6 @@ def _normalize_and_tensor() -> List:
 def _standard_spatial_ops() -> List:
     return [
         A.RandomRotate90(p=0.5),
-        _random_flip(p=0.5),
         _affine_like(shift_limit=0.05, scale_limit=0.10, rotate_limit=20, border_mode=cv2.BORDER_REFLECT_101, p=0.5),
         A.OneOf(
             [
@@ -324,9 +338,10 @@ def _standard_intensity_ops() -> List:
     ]
 
 
-def _strong_intensity_ops(img_size: int) -> List:
-    hole_size = max(8, img_size // 12)
-    min_hole_size = max(4, img_size // 32)
+def _strong_intensity_ops(img_size) -> List:
+    shortest_side = min(resolve_target_hw(img_size))
+    hole_size = max(8, shortest_side // 12)
+    min_hole_size = max(4, shortest_side // 32)
     return [
         A.OneOf(
             [
@@ -358,7 +373,7 @@ def _strong_intensity_ops(img_size: int) -> List:
     ]
 
 
-def _xray_ops(img_size: int) -> List:
+def _xray_ops(img_size) -> List:
     return [
         # Randomly trim the left, right, top, and bottom.
         # The crop keeps the original aspect ratio.
@@ -447,7 +462,7 @@ def _xray_ops(img_size: int) -> List:
     ]
 
 
-def _build_policy(strategy: str, img_size: int) -> List:
+def _build_policy(strategy: str, img_size) -> List:
     if strategy == "none":
         return [_resize(img_size)]
     if strategy == "basic":
@@ -471,7 +486,7 @@ def _build_policy(strategy: str, img_size: int) -> List:
 
 
 def build_train_transform(
-    img_size: int,
+    img_size,
     strategy: str = "auto",
     dataset_name: str = "",
     base_dir: str = "",
@@ -480,12 +495,12 @@ def build_train_transform(
     return A.Compose(_build_policy(resolved_strategy, img_size))
 
 
-def build_val_transform(img_size: int) -> A.Compose:
+def build_val_transform(img_size) -> A.Compose:
     return A.Compose([_resize(img_size)])
 
 
 def build_tensor_train_transform(
-    img_size: int,
+    img_size,
     strategy: str = "auto",
     dataset_name: str = "",
     base_dir: str = "",
@@ -494,5 +509,5 @@ def build_tensor_train_transform(
     return A.Compose([*_build_policy(resolved_strategy, img_size), *_normalize_and_tensor()])
 
 
-def build_tensor_val_transform(img_size: int) -> A.Compose:
+def build_tensor_val_transform(img_size) -> A.Compose:
     return A.Compose([_resize(img_size), *_normalize_and_tensor()])

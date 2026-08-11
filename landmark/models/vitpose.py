@@ -1,4 +1,4 @@
-"""ViTPose-S full-frame heatmap baseline."""
+"""ViTPose-S/B full-frame heatmap baselines."""
 
 from __future__ import annotations
 
@@ -94,6 +94,34 @@ class ViTPoseS(nn.Module):
         return self.heatmap_head(features)
 
 
+class ViTPoseB(ViTPoseS):
+    """Base ViTPose encoder (768/12/12) with the same deconvolution head."""
+
+    def __init__(
+        self,
+        input_channels: int = 3,
+        num_landmarks: int = 129,
+        image_size: int = 640,
+        patch_size: int = 16,
+        embed_dim: int = 768,
+        depth: int = 12,
+        attention_heads: int = 12,
+        mlp_ratio: int = 4,
+        dropout: float = 0.0,
+    ):
+        super().__init__(
+            input_channels=input_channels,
+            num_landmarks=num_landmarks,
+            image_size=image_size,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            depth=depth,
+            attention_heads=attention_heads,
+            mlp_ratio=mlp_ratio,
+            dropout=dropout,
+        )
+
+
 ViTPoseLandmarkBaseline = ViTPoseS
 
-__all__ = ["ViTPoseS", "ViTPoseLandmarkBaseline"]
+__all__ = ["ViTPoseS", "ViTPoseB", "ViTPoseLandmarkBaseline"]

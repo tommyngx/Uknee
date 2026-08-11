@@ -132,6 +132,7 @@ MODEL_REGISTRY = {
     "RWKV_UNetV2": (".RWKV.RWKV_UNet.RWKV_UNetV2", "rwkv_unetv2"),
     "RWKV_UNetV3": (".RWKV.RWKV_UNet.RWKV_UNetV3", "rwkv_unetv3"),
     "RWKV_UNetV4": (".RWKV.RWKV_UNet.RWKV_UNetV4", "rwkv_unetv4"),
+    "RWKV_UNetV6": (".RWKV.RWKV_UNet.RWKV_UNetV6", "med_axial_rwkv6_unet"),
     "RWKV_UNetV2_Ablation": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_ablation"),
     "RWKV_UNetV2_NoDS": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_nods"),
     "RWKV_UNetV2_NoBoundary": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_noboundary"),
@@ -236,7 +237,9 @@ def build_model(config, **kwargs):
         and "img_size" not in kwargs
     ):
         kwargs = dict(kwargs)
-        kwargs["img_size"] = int(config.img_size)
+        from segment.utils.preprocessing import resolve_target_hw
+
+        kwargs["img_size"] = max(resolve_target_hw(config.img_size))
 
     if model_name == "RWKV_UNetV2":
         kwargs = dict(kwargs)

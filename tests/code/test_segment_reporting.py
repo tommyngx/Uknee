@@ -13,7 +13,11 @@ for p in (str(REPO_ROOT),):
 import numpy as np
 import torch
 
-from segment.utils.segment_reporting import SegmentationEvaluator, plot_segmentation_metrics
+from segment.utils.segment_reporting import (
+    SegmentationEvaluator,
+    _resize_sample_for_display,
+    plot_segmentation_metrics,
+)
 from segment.utils.training_logs import (
     EpochLogWriter,
     model_paper_profile,
@@ -30,6 +34,17 @@ RESULT_COLUMNS = [
 
 
 class SegmentReportingTests(unittest.TestCase):
+    def test_sample_display_preserves_aspect_ratio(self):
+        image = np.zeros((200, 100, 3), dtype=np.uint8)
+        target = np.zeros((200, 100), dtype=np.uint8)
+        prediction = np.zeros((200, 100), dtype=np.uint8)
+        resized_image, resized_target, resized_prediction = _resize_sample_for_display(
+            image, target, prediction, fixed_height=512
+        )
+        self.assertEqual(resized_image.shape[:2], (512, 256))
+        self.assertEqual(resized_target.shape, (512, 256))
+        self.assertEqual(resized_prediction.shape, (512, 256))
+
     def test_binary_evaluator_and_reports_use_real_predictions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)

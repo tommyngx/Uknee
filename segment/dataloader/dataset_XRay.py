@@ -18,6 +18,8 @@ from albumentations.pytorch import ToTensorV2
 
 import matplotlib.pyplot as plt
 
+from segment.dataloader.image_io import read_rgb_image
+
 def rotate_bound(image, angle, flag):
     (h, w) = image.shape[:2]
     (cX, cY) = (w / 2, h / 2)
@@ -72,7 +74,7 @@ class MontgomeryXRAYDataSet(Dataset):
 
         case = self.sample_list[idx]
 
-        image = cv2.imread(os.path.join(self._base_dir, 'CXR_png', case ))
+        image = read_rgb_image(os.path.join(self._base_dir, 'CXR_png', case ))
         label = cv2.imread(os.path.join(self._base_dir, 'Mask',  case ), cv2.IMREAD_GRAYSCALE)[..., None]
 
         augmented = self.transform(image=image, mask=label)
@@ -129,7 +131,7 @@ class MIHXRAYDataSet(Dataset):
 
         case = self.sample_list[idx]
 
-        image = cv2.imread(os.path.join(self._base_dir, 'images', case ))
+        image = read_rgb_image(os.path.join(self._base_dir, 'images', case ))
         label = cv2.imread(os.path.join(self._base_dir, 'masks',  case.replace('.png','_mask.png') ), cv2.IMREAD_GRAYSCALE)[..., None]
         augmented = self.transform(image=image, mask=label)
         image = augmented['image']
@@ -151,14 +153,14 @@ class MIHXRAYDataSet(Dataset):
 
 class XRAYDataSetMontgomery(data.Dataset):
     def __init__(self, root, list_path, max_iters=None, crop_size=(512, 512), mean=(128, 128, 128), scale=True,
-                 mirror=True, ignore_label=0):
+                 mirror=False, ignore_label=0):
         self.root = root
         self.list_path = list_path
         self.crop_h, self.crop_w = crop_size
         self.scale = scale
         self.ignore_label = ignore_label
         self.mean = mean
-        self.is_mirror = mirror
+        self.is_mirror = False  # Anatomical X-ray training never mirrors laterality.
         self.img_ids = [i_id.strip() for i_id in open(list_path)]
         if not max_iters == None:
             self.img_ids = self.img_ids * int(np.ceil(float(max_iters) / len(self.img_ids)))
@@ -187,7 +189,7 @@ class XRAYDataSetMontgomery(data.Dataset):
     def __getitem__(self, index):
         datafiles = self.files[index]
         angle = -15.0 + random.random() * 30.0
-        image = cv2.imread(datafiles["img"], cv2.IMREAD_COLOR)
+        image = read_rgb_image(datafiles["img"])
         image = rotate_bound(image, angle, cv2.INTER_CUBIC)
         image = cv2.resize(image, (576, 576), interpolation=cv2.INTER_CUBIC)
         label = cv2.imread(datafiles["label"], cv2.IMREAD_GRAYSCALE)
@@ -221,10 +223,6 @@ class XRAYDataSetMontgomery(data.Dataset):
         image = np.asarray(img_pad[h_off: h_off + self.crop_h, w_off: w_off + self.crop_w], np.float32)
         label = np.asarray(label_pad[h_off: h_off + self.crop_h, w_off: w_off + self.crop_w], np.float32)
         image = image.transpose((2, 0, 1))
-        if self.is_mirror:
-            flip = np.random.choice(2) * 2 - 1
-            image = image[:, :, ::flip]
-            label = label[:, ::flip]
         label = np.expand_dims(label, axis=0)
         return image.copy(), label.copy(), np.array(size), name
 
@@ -254,7 +252,7 @@ class XRAYDataTestSet(data.Dataset):
 
     def __getitem__(self, index):
         datafiles = self.files[index]
-        image = cv2.imread(datafiles["img"], cv2.IMREAD_COLOR)
+        image = read_rgb_image(datafiles["img"])
         image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_CUBIC)
         size = image.shape
         name = datafiles["img"]
@@ -270,4 +268,3 @@ class XRAYDataTestSet(data.Dataset):
                                        value=(0.0, 0.0, 0.0))
         image = image.transpose((2, 0, 1))
         return image, np.array(size), name
-

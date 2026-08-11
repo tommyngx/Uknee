@@ -1,34 +1,103 @@
-# Uknee pose overrides applied on top of the vendored Ultralytics defaults.
+# landmark pose-only defaults. Keep every key touched by the local train/val/predict/export code.
 task: pose
 mode: train
+model:
+data:
+
+# Train
 epochs: 100
+time:
 patience: 100
 batch: 16
-imgsz: 640
+imgsz: [640, 640]  # [height, width]
+save: true
+save_period: -1
+cache: false
+device:
 workers: 8
-project: runs/landmark
-name: null
+project: runs
+name:
+exist_ok: true
+pretrained: true
+optimizer: auto
+verbose: true
 seed: 2006
 deterministic: true
-optimizer: auto
-amp: true
+single_cls: false
+rect: false
+cos_lr: false
 close_mosaic: 10
-cache: false
-plots: false
-save_period: -1
-save: true
-val: true
+resume: false
+amp: true
+auto_export_onnx: true
+aug_strategy: xray
+gpu_ids: []
+dataset_source:
+dataset_root:
+fraction: 1.0
+profile: false
+freeze:
+multi_scale: 0.0
+compile: false
+distill_model:
 
-# Keep upstream pose loss defaults explicit in the resolved experiment file.
+# Validation and prediction
+val: true
+split: val
+save_json: false
+conf:
+iou: 0.7
+max_det: 300
+quantize:
+dnn: false
+plots: false
+end2end:
+source:
+vid_stride: 1
+stream_buffer: false
+visualize: false
+augment: false
+agnostic_nms: false
+classes:
+retina_masks: false
+embed:
+show: false
+save_frames: false
+save_txt: false
+save_conf: false
+save_crop: false
+show_labels: true
+show_conf: true
+show_boxes: true
+line_width:
+
+# Export (TorchScript and ONNX only)
+format: torchscript
+optimize: false
+dynamic: false
+simplify: true
+opset:
+nms: false
+path:
+
+# Loss and optimizer
+lr0: 0.01
+lrf: 0.01
+momentum: 0.937
+weight_decay: 0.0005
+warmup_epochs: 3.0
+warmup_momentum: 0.8
+warmup_bias_lr: 0.1
 box: 7.5
 cls: 0.5
+cls_pw: 0.0
 dfl: 1.5
 pose: 12.0
 kobj: 1.0
 rle: 1.0
+nbs: 64
 
-# Upstream YOLO augmentation defaults. Models with a single-instance
-# auxiliary/refinement target are validated with mosaic/mixup/cutmix disabled.
+# Pose-safe augmentation
 hsv_h: 0.015
 hsv_s: 0.7
 hsv_v: 0.4
@@ -38,7 +107,17 @@ scale: 0.5
 shear: 0.0
 perspective: 0.0
 flipud: 0.0
-fliplr: 0.5
+fliplr: 0.0
+bgr: 0.0
 mosaic: 1.0
 mixup: 0.0
 cutmix: 0.0
+copy_paste: 0.0
+copy_paste_mode: flip
+
+# Kept because shared dataset classes read them; no classify/segment task is exposed.
+overlap_mask: false
+mask_ratio: 4
+auto_augment: null
+erasing: 0.0
+cfg:

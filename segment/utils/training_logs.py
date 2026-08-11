@@ -144,7 +144,7 @@ class EpochLogWriter:
 
         file_exists = self.csv_path.exists()
         with self.csv_path.open("a", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=self._fieldnames)
+            writer = csv.DictWriter(file, fieldnames=self._fieldnames, lineterminator="\n")
             if not file_exists:
                 writer.writeheader()
             writer.writerow(clean_row)
@@ -185,7 +185,7 @@ def _top_ranked_epochs(epochs, scores, maximize=True, top_k=2):
 
 
 def _style_dashboard_ax(ax):
-    """Apply black outer spine borders, outer ticks, and crisp white grid matching landmark2."""
+    """Apply black outer spine borders, outer ticks, and crisp white grid matching landmark."""
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color("black")
@@ -222,7 +222,7 @@ def plot_training_dashboard(
     ranking_scores = _extract_series(history_rows, ranking_key)
     top_epochs = _top_ranked_epochs(epochs, ranking_scores, maximize=maximize, top_k=top_k)
 
-    # Use seaborn darkgrid theme matching landmark2
+    # Use seaborn darkgrid theme matching landmark
     plt.style.use("seaborn-v0_8-darkgrid" if "seaborn-v0_8-darkgrid" in plt.style.available else "default")
     fig, axes = plt.subplots(2, 2, figsize=(14, 9), dpi=150)
 

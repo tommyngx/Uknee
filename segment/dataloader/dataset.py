@@ -10,6 +10,7 @@ from PIL import Image
 from torchvision import transforms
 from albumentations.pytorch import ToTensorV2
 from segment.dataloader.augment import build_tensor_train_transform, build_tensor_val_transform
+from segment.dataloader.image_io import read_rgb_image
 
 VALID_GENERIC_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
@@ -94,7 +95,7 @@ class MedicalDataSets(Dataset):
             self._image_map, self._mask_map, self.sample_list[idx]
         )
 
-        image = cv2.imread(image_path)
+        image = read_rgb_image(image_path)
         label = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if image is None or label is None:
             raise FileNotFoundError(
@@ -154,7 +155,7 @@ class GlasDataSets(Dataset):
 
         case = self.sample_list[idx]
         
-        image = cv2.imread(os.path.join(self._base_dir+'/glas_dataset/' ,case))
+        image = read_rgb_image(os.path.join(self._base_dir+'/glas_dataset/' ,case))
         label = cv2.imread(os.path.join(self._base_dir+'/glas_dataset/' ,case.replace('.bmp','_anno.bmp')), cv2.IMREAD_GRAYSCALE)[..., None]
         augmented = self.transform(image=image, mask=label)
         image = augmented['image']
@@ -209,7 +210,7 @@ class BUSBRADatasets(Dataset):
 
         case = self.sample_list[idx]
 
-        image = cv2.imread(os.path.join(self._base_dir, 'Images', case ))
+        image = read_rgb_image(os.path.join(self._base_dir, 'Images', case ))
         label = cv2.imread(os.path.join(self._base_dir, 'Masks', case.replace('bus','mask')), cv2.IMREAD_GRAYSCALE)[..., None]
         
         augmented = self.transform(image=image, mask=label)
@@ -259,7 +260,7 @@ class MedicalDataSetsVal(Dataset):
             self._image_map, self._mask_map, self.sample_list[idx]
         )
 
-        image = cv2.imread(image_path)
+        image = read_rgb_image(image_path)
         label = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if image is None or label is None:
             raise FileNotFoundError(
@@ -319,7 +320,7 @@ class MedicalDataSetsVal_withscale(Dataset):
         case, image_path, mask_path = _resolve_generic_pair(
             self._image_map, self._mask_map, self.sample_list[idx]
         )
-        image = cv2.imread(image_path)
+        image = read_rgb_image(image_path)
         label = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if image is None or label is None:
             raise FileNotFoundError(
@@ -461,7 +462,7 @@ class PH2Dataset(Dataset) :
         label_path = os.path.join(self.dataset_dir, self.label_folder, self.frame.mask_path[idx])
 
 
-        image = cv2.imread(image_path)
+        image = read_rgb_image(image_path)
         label = cv2.imread(label_path, cv2.IMREAD_GRAYSCALE)[..., None]
 
         if self.transform:        
@@ -489,8 +490,7 @@ class KvasirSEGDatagen(Dataset):
         return len(self.pairs)
 
     def __getitem__(self, idx):
-        image = cv2.imread(self.pairs[idx][0])
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = read_rgb_image(self.pairs[idx][0])
         mask = cv2.imread(self.pairs[idx][1], 0)
         mask = cv2.threshold(mask, 127, 1, cv2.THRESH_BINARY)[1].astype('float32')
 
@@ -515,8 +515,7 @@ class KvasirSEGDatagenVAL(Dataset):
         return len(self.pairs)
 
     def __getitem__(self, idx):
-        image = cv2.imread(self.pairs[idx][0])
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = read_rgb_image(self.pairs[idx][0])
         mask = cv2.imread(self.pairs[idx][1], 0)
         mask = cv2.threshold(mask, 127, 1, cv2.THRESH_BINARY)[1].astype('float32') 
 
@@ -614,7 +613,7 @@ class CHASEDB1Dataset(Dataset):
     def __getitem__(self, idx):
         image_path, label_path = self.sample_list[idx]
 
-        image = cv2.imread(image_path)
+        image = read_rgb_image(image_path)
         label = cv2.imread(label_path, cv2.IMREAD_GRAYSCALE)[..., None]
 
         if self.transform:
@@ -710,7 +709,7 @@ class Covid19CTScanDataset(Dataset) :
         image_path = os.path.join(self.dataset_dir,  self.image_folder, self.frame.image_path[idx])
         label_path = os.path.join(self.dataset_dir,  self.label_folder, self.frame.mask_path[idx])
 
-        image = cv2.imread((image_path))
+        image = read_rgb_image(image_path)
         label = cv2.imread((label_path), cv2.IMREAD_GRAYSCALE)[..., None]
 
         augmented = self.transform(image=image, mask=label)

@@ -8,8 +8,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import torch
+import yaml
 
-from landmark.utils.plotting import plot_pose_metrics, plot_validation_samples
+from landmark.core.plotting import plot_pose_metrics, plot_validation_samples
 from landmark.utils.validation import FlatPoseTrainerMixin, RESULT_COLUMNS
 
 
@@ -49,12 +51,15 @@ class _Metric:
 
 
 class ReportingTests(unittest.TestCase):
-    def test_flat_checkpoints_mre_fitness_and_compact_csv(self):
+    def test_onnx_filename_uses_portable_underscores(self):
+        self.assertEqual(_Trainer._onnx_name("yolo26-pose-v9.yaml"), "yolo26_pose_v9.onnx")
+
+    def test_weight_checkpoints_mre_fitness_and_compact_csv(self):
         with tempfile.TemporaryDirectory() as directory:
             trainer = _Trainer(Path(directory))
-            self.assertEqual(trainer.wdir, Path(directory))
-            self.assertEqual(trainer.best, Path(directory) / "best.pt")
-            self.assertEqual(trainer.last, Path(directory) / "last.pt")
+            self.assertEqual(trainer.wdir, Path(directory) / "weights")
+            self.assertEqual(trainer.best, Path(directory) / "weights" / "best.pt")
+            self.assertEqual(trainer.last, Path(directory) / "weights" / "last.pt")
             self.assertEqual(trainer.callbacks["on_fit_epoch_end"], [])
             _, fitness = trainer.validate()
             self.assertEqual(fitness, -10.0)
@@ -76,7 +81,17 @@ class ReportingTests(unittest.TestCase):
             )
             with trainer.csv.open(newline="", encoding="utf-8") as stream:
                 self.assertEqual(tuple(next(csv.reader(stream))), RESULT_COLUMNS)
-            self.assertTrue((Path(directory) / "dashboard_pose.png").is_file())
+            self.assertTrue((Path(directory) / "landmark_dashboard.png").is_file())
+
+            trainer.model = torch.nn.Conv2d(3, 2, kernel_size=1)
+            trainer.metrics = {"metrics/MRE": 5.0, "metrics/PCK2": 0.5}
+            trainer.validator = SimpleNamespace(_sample_paths=["a", "b", "c", "d"], speed={"inference": 2.5})
+            trainer.device = torch.device("cpu")
+            trainer._write_summary()
+            summary = yaml.safe_load((Path(directory) / "summary.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(summary["task"], "landmark_detection")
+            self.assertEqual(summary["model"]["parameters"], 8)
+            self.assertEqual(summary["artifacts"]["samples_per_epoch"], 4)
 
     def test_consolidated_metrics_and_fixed_sample_grid(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -86,7 +101,7 @@ class ReportingTests(unittest.TestCase):
                 pose=_Metric(),
                 box=_Metric(),
             )
-            self.assertTrue(plot_pose_metrics(metrics, root / "pose_metrics.png").is_file())
+            self.assertTrue(plot_pose_metrics(metrics, root / "landmark_metrics.png").is_file())
             records = [
                 {
                     "path": f"image_{index}.png",
@@ -100,7 +115,7 @@ class ReportingTests(unittest.TestCase):
                 }
                 for index in range(4)
             ]
-            output = plot_validation_samples(records, root / "samples" / "val_samples_e1.png")
+            output = plot_validation_samples(records, root / "samples" / "landmark_sample_e1.png")
             self.assertIsNotNone(output)
             self.assertTrue(output.is_file())
 

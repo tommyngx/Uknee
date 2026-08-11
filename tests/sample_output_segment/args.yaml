@@ -1,4 +1,11 @@
 model: RWKV_UNetV6
-epochs: 150
-lr: 0.001
+dataset_name: unet_meskoseg_9class
+max_epochs: 3
+img_size: 256
+input_channel: 3
+num_classes: 11
+batch_size: 8
+base_lr: 0.001
+pixel_spacing_mm: 0.1
 seed: 2006
+auto_export_onnx: true

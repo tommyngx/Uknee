@@ -1,0 +1,29 @@
+# Segment training defaults. CLI values override these keys.
+model: U_Net
+dataset: busi
+dataset_name: busi
+train_file_dir: train.txt
+val_file_dir: val.txt
+base_lr: 0.01
+batch: 8
+workers: 4
+gpu: [0]
+epochs: 2
+seed: 2006
+imgsz: [256, 256]  # [height, width]
+num_classes: 1
+input_channel: 3
+aug_strategy: auto
+resume: false
+pretrained_path: ""
+name: ""
+project: ""
+exist_ok: true
+pixel_spacing_mm: 0.10
+auto_export_onnx: true
+zero_shot_base_dir: ""
+zero_shot_dataset_name: ""
+do_deeps: false
+model_id: 0
+just_for_test: false
+just_for_zero_shot: false
