@@ -9,7 +9,7 @@
 4. Keep multi-image augmentation disabled for V1, V9, HRNet and ViTPose unless
    their target representation is redesigned for multiple instances/class.
 5. Do not replace ROIAlign during V9 training or ordinary inference.
-6. Keep upstream mAP fitness for `best.pt`; use MRE only for `best_mre.pt`.
+6. Keep `last.pt` resumable and select the flat-layout `best.pt` by minimum validation MRE.
 7. Preserve standard YOLO `Results`, checkpoint and CLI semantics.
 8. Run `python -m unittest discover -s landmark/tests -v` after changes and a
    real 8–16 image overfit plus two-process DDP smoke before paper experiments.

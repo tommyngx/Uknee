@@ -10,9 +10,20 @@ from dataloader.dataset_mesko import Mesko5SegDataset, is_mesko_dataset
 from dataloader.download import get_MedSegBench_dataset 
 from dataloader.download import INFO as MedSegBench_dataset_name_dict
 from dataloader.augment import build_train_transform, build_val_transform, resolve_aug_strategy
+import torch
 
 
 CUSTOM_BINARY_DATASET_NAMES = {"custom", "custom_binary", "binary", "mydata", "mydataset"}
+
+
+def seed_worker(worker_id):
+    """Seed each DataLoader worker; top-level definition is spawn/forkserver safe."""
+    worker_seed = torch.initial_seed() % (2 ** 32)
+    import random
+    import numpy as np
+
+    random.seed(worker_seed)
+    np.random.seed(worker_seed)
 
 
 def is_generic_binary_dataset(base_dir):
@@ -151,11 +162,26 @@ def getDataloader(args):
     if uses_aug_policy:
         print(f"augmentation strategy:{resolved_aug_strategy}")
     print(f"train num:{len(db_train)}, val num:{len(db_val)}")
-    import random
-    def worker_init_fn(worker_id):
-        random.seed(args.seed + worker_id)
-    trainloader = DataLoader(db_train, batch_size=args.batch_size, shuffle=True,num_workers=4, pin_memory=False,worker_init_fn=worker_init_fn)
-    valloader = DataLoader(db_val, batch_size=1, shuffle=False,num_workers=1)
+    generator = torch.Generator()
+    generator.manual_seed(int(args.seed))
+    workers = max(int(getattr(args, "workers", 4)), 0)
+    trainloader = DataLoader(
+        db_train,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=workers,
+        pin_memory=False,
+        worker_init_fn=seed_worker if workers else None,
+        generator=generator,
+    )
+    valloader = DataLoader(
+        db_val,
+        batch_size=1,
+        shuffle=False,
+        num_workers=min(workers, 1),
+        worker_init_fn=seed_worker if workers else None,
+        generator=generator,
+    )
     return trainloader, valloader
 
 

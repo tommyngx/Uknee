@@ -31,8 +31,8 @@ of any site-installed `ultralytics` package.
 - ONNX export recognizes the Uknee fixed-output wrapper and assigns stable
   `detections`, `num_detections`, and `canonical_keypoints` output names with
   dynamic batch axes.
-- Pose training supports project-specific medical metrics and a `best_mre.pt`
-  checkpoint through the landmark integration layer.
+- Pose training supports flat checkpoints, MRE-based `best.pt`, medical metrics
+  and consolidated reporting through the landmark integration layer.
 - Public model registration is intentionally limited to YOLO detect/pose;
   cloud HUB sessions, tracking, Solutions and unrelated task frontends are not
   part of the standalone Uknee runtime.

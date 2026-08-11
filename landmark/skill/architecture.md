@@ -45,9 +45,9 @@ from each region's landmark envelope.
 ## Validation and export
 
 The pose validator preserves box/pose precision, recall and mAP. Its extension
-adds pixel MRE, median/p95, PCK2/4/8, image failure rate, per-region MRE and
-path order/topology measurements. Upstream fitness still selects `best.pt`;
-MRE independently selects `best_mre.pt`.
+adds pixel MRE, median/p95/HD95, PCK2/4/8, image failure rate, per-region MRE and
+path order/topology measurements. The flat-layout `best.pt` is selected by
+minimum validation MRE; `last.pt` remains the resume checkpoint.
 
 The deployment wrapper has three fixed outputs: four detection rows,
 `num_detections`, and canonical `[B,129,3]`. V1 training-only auxiliary tensors

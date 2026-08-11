@@ -21,7 +21,7 @@ from ultralytics.utils.torch_utils import model_info
 
 from landmark.data.schema import NUM_LANDMARKS, REGION_KEYPOINT_COUNTS, REGION_NAMES
 from landmark.models import HRNetW32, ViTPoseS
-from landmark.utils.validation import KneePoseValidator
+from landmark.utils.validation import FlatPoseTrainerMixin, KneePoseValidator
 
 
 def _read_config(config: str | Path | dict[str, Any]) -> dict[str, Any]:
@@ -215,7 +215,7 @@ class HeatmapPoseValidator(KneePoseValidator):
         return result
 
 
-class HeatmapPoseTrainer(DetectionTrainer):
+class HeatmapPoseTrainer(FlatPoseTrainerMixin, DetectionTrainer):
     """Reuse upstream AMP/EMA/optimizer/scheduler/DDP for heatmap baselines."""
 
     def __init__(self, cfg=None, overrides=None, _callbacks=None):

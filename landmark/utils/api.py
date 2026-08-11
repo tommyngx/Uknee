@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import shutil
+import re
 from pathlib import Path
 from typing import Any
 
@@ -90,10 +90,24 @@ class KneePose:
 
     def train(self, *, data: str | Path, **kwargs: Any):
         """Train with leakage-safe validated data and upstream trainer defaults."""
+        data_path = Path(data).expanduser().resolve()
+        dataset_config = _load_yaml(data_path)
+        dataset_name = str(dataset_config.get("dataset_name", data_path.stem))
+        run_name = "_".join(
+            re.sub(r"[^a-zA-Z0-9-]+", "-", value).strip("-").lower()
+            for value in (self.model_path.stem, dataset_name)
+        )
         prepared = self._prepare_data(data)
         args = _load_yaml(DEFAULT_CFG)
         args.update(kwargs)
-        args["data"] = str(prepared.yaml_path)
+        args.update(
+            data=str(prepared.yaml_path),
+            project=str(PACKAGE_ROOT.parent / "runs" / "landmark"),
+            name=run_name,
+            exist_ok=True,
+            plots=False,
+            save_period=-1,
+        )
         head_name = type(self.model.model[-1]).__name__ if self.family == "yolo" else ""
         if (
             self.model_path.stem in SINGLE_IMAGE_MODELS
@@ -102,18 +116,6 @@ class KneePose:
         ):
             args.update(mosaic=0.0, mixup=0.0, cutmix=0.0)
 
-        def save_resolved_dataset(trainer) -> None:
-            from ultralytics.utils import RANK
-
-            if RANK not in {-1, 0}:
-                return
-            destination = Path(trainer.save_dir) / "dataset_resolved.yaml"
-            if not destination.exists():
-                shutil.copy2(prepared.yaml_path, destination)
-
-        if hasattr(self.backend, "add_callback"):
-            self.backend.add_callback("on_train_start", save_resolved_dataset)
-            self.backend.add_callback("on_model_save", _save_best_mre)
         if self.family == "yolo":
             from landmark.utils.validation import KneePoseTrainer
 
@@ -184,30 +186,3 @@ class KneePose:
 
 
 __all__ = ["KneePose", "KneePoseResult"]
-
-
-def _save_best_mre(trainer) -> None:
-    """Maintain a medical-error checkpoint independently of upstream fitness."""
-    from ultralytics.utils import RANK
-
-    if RANK not in {-1, 0}:
-        return
-    if not getattr(trainer, "metrics", None):
-        return
-    current = trainer.metrics.get("metrics/MRE")
-    if current is None or not torch.isfinite(torch.tensor(float(current))):
-        return
-    record = Path(trainer.wdir) / "best_mre.txt"
-    if hasattr(trainer, "_uknee_best_mre"):
-        best = trainer._uknee_best_mre
-    else:
-        try:
-            best = float(record.read_text(encoding="utf-8").strip())
-        except (FileNotFoundError, ValueError):
-            best = float("inf")
-    if float(current) < best:
-        trainer._uknee_best_mre = float(current)
-        source = Path(trainer.last)
-        if source.exists():
-            shutil.copy2(source, Path(trainer.wdir) / "best_mre.pt")
-            record.write_text(f"{float(current):.12g}\n", encoding="utf-8")

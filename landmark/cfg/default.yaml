@@ -6,15 +6,16 @@ patience: 100
 batch: 16
 imgsz: 640
 workers: 8
-project: landmark/runs/pose
-name: train
+project: runs/landmark
+name: null
 seed: 2006
 deterministic: true
 optimizer: auto
 amp: true
 close_mosaic: 10
 cache: false
-plots: true
+plots: false
+save_period: -1
 save: true
 val: true
 
@@ -41,4 +42,3 @@ fliplr: 0.5
 mosaic: 1.0
 mixup: 0.0
 cutmix: 0.0
-

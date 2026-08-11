@@ -1,12 +1,14 @@
 import os
 import argparse
-import shutil
 import time
 import traceback
+import re
+from pathlib import Path
 
 cpu_num = 1
 os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
 os.environ.setdefault('MPLBACKEND', 'Agg')
+os.environ.setdefault('MPLCONFIGDIR', '/tmp/uknee-matplotlib')
 os.environ['OMP_NUM_THREADS'] = str(cpu_num)
 os.environ['OPENBLAS_NUM_THREADS'] = str(cpu_num)
 os.environ['MKL_NUM_THREADS'] = str(cpu_num)
@@ -23,9 +25,6 @@ print(f"Set CUDA_VISIBLE_DEVICES to {os.environ['CUDA_VISIBLE_DEVICES']}")
 
 import random
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import json
-import logging
 import numpy as np
 import torch
 import torch.nn as nn
@@ -41,15 +40,28 @@ from models import build_model
 import utils.losses as losses
 from utils.metrics_medpy import get_metrics
 from utils.util import AverageMeter
-import tempfile
 from utils.training_logs import (
     EpochLogWriter,
     plot_training_dashboard,
     save_training_args,
     setup_logger,
 )
+from utils.segmentation_reporting import SegmentationEvaluator, plot_segmentation_metrics
 from dataloader.dataloader import getDataloader,getZeroShotDataloader
 import torch.nn.functional as F
+
+REPO_ROOT = Path(__file__).resolve().parent
+RESULT_COLUMNS = [
+    "epoch",
+    "train/loss",
+    "val/loss",
+    "val/dice",
+    "val/iou",
+    "val/hd95",
+    "val/assd",
+    "val/sens",
+    "val/prec",
+]
 
 def convert_to_numpy(data):
     if isinstance(data, torch.Tensor):
@@ -61,11 +73,6 @@ def convert_to_numpy(data):
     else:
         return data
 
-
-def ensure_parent_dir(file_path):
-    parent_dir = os.path.dirname(file_path)
-    if parent_dir:
-        os.makedirs(parent_dir, exist_ok=True)
 
 def seed_torch(seed):
     torch.manual_seed(seed)
@@ -80,6 +87,17 @@ def seed_torch(seed):
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
+def _str2bool(value):
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected a boolean value, received: {value}")
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default="U_Net", help='model')
@@ -91,9 +109,10 @@ def parse_arguments():
                         help='segmentation network learning rate')
     parser.add_argument('--batch_size', type=int, default=8,
                         help='batch_size per gpu')
+    parser.add_argument('--workers', type=int, default=4, help='DataLoader worker processes')
     parser.add_argument('--gpu', type=str, default="7", help='gpu')
     parser.add_argument('--max_epochs', type=int, default=2, help='epoch')
-    parser.add_argument('--seed', type=int, default=41, help='seed')
+    parser.add_argument('--seed', type=int, default=2006, help='Reproducibility seed')
     parser.add_argument('--img_size', type=int, default=256, help='img_size')
     parser.add_argument('--num_classes', type=int, default=1, help='img_size')
     parser.add_argument('--input_channel', type=int, default=3, help='img_size')
@@ -105,14 +124,15 @@ def parse_arguments():
     )
     parser.add_argument('--resume', action='store_true', help='Resume training from checkpoint')
     parser.add_argument('--pretrained_path', type=str, default="", help='Path to custom pretrained weights/checkpoint (.pth)')
-    parser.add_argument('--exp_name', type=str, default="default_exp", help='Experiment name')
-    parser.add_argument('--output_dir', type=str, default="", help='Base output directory. Run artifacts are saved under {output_dir}/{exp_name}/. Defaults to ./output/{exp_name}/')
+    parser.add_argument('--exp_name', type=str, default="", help='Optional run name; defaults to <model>_<dataset>')
+    parser.add_argument('--output_dir', type=str, default="", help='Run root; defaults to <repo>/runs/segmentation')
+    parser.add_argument('--pixel_spacing_mm', type=float, default=0.10, help='In-plane pixel spacing used by HD95/ASSD')
     parser.add_argument('--zero_shot_base_dir', type=str, default="", help='zero_base_dir')
     parser.add_argument('--zero_shot_dataset_name', type=str, default="", help='zero_shot_dataset_name')
-    parser.add_argument('--do_deeps', type=bool, default=False, help='Use deep supervision')
+    parser.add_argument('--do_deeps', type=_str2bool, nargs='?', const=True, default=False, help='Use deep supervision')
     parser.add_argument('--model_id', type=int, default=0, help='model_id')
-    parser.add_argument('--just_for_test', type=bool, default=0, help='just for test')
-    parser.add_argument('--just_for_zero_shot', type=bool, default=0, help='just for test')
+    parser.add_argument('--just_for_test', type=_str2bool, nargs='?', const=True, default=False, help='Only run validation')
+    parser.add_argument('--just_for_zero_shot', type=_str2bool, nargs='?', const=True, default=False, help='Only run zero-shot validation')
     args = parser.parse_args()
     try:
         from dataloader.dataset_mesko import infer_mesko_num_classes, is_mesko_dataset
@@ -295,7 +315,7 @@ def _raise_non_finite_error(logger, epoch, batch_idx, loss_value, volume_batch, 
     logger.error(_tensor_stats("label", label_batch))
     logger.error(_tensor_stats("output", outputs))
     raise RuntimeError(
-        "Non-finite training value detected. Check logs/training.log for input, label, and output statistics."
+        "Non-finite training value detected. Review the console log for input, label, and output statistics."
     )
 
 
@@ -318,115 +338,26 @@ def _build_optimizer(args, model, logger):
     return optimizer, args.base_lr, "SGD"
 
 
-def _save_checkpoint(path, args, model, optimizer, epoch, best_iou, metrics=None):
+def _save_checkpoint(path, args, model, optimizer, epoch, best_dice, metrics=None):
     checkpoint = {
         'epoch': epoch,
         'state_dict': _unwrap_model(model).state_dict(),
         'optimizer': optimizer.state_dict() if optimizer is not None else None,
-        'best_iou': best_iou,
+        'best_dice': best_dice,
         'metrics': convert_to_numpy(metrics or {}),
         'config': vars(args),
     }
     torch.save(checkpoint, path)
 
 
-def _refresh_topk_aliases(best_model_dir, topk_entries, top_k=3):
-    os.makedirs(best_model_dir, exist_ok=True)
-    summary = []
-
-    for rank in range(1, top_k + 1):
-        alias_path = os.path.join(best_model_dir, f'checkpoint_top{rank}.pth')
-        if os.path.exists(alias_path):
-            os.remove(alias_path)
-
-    for rank, entry in enumerate(topk_entries[:top_k], start=1):
-        alias_path = os.path.join(best_model_dir, f'checkpoint_top{rank}.pth')
-        shutil.copy2(entry["path"], alias_path)
-        summary.append({
-            "rank": rank,
-            "epoch": entry["epoch"],
-            "value": entry["score"],
-            "source_path": entry["path"],
-            "alias_path": alias_path,
-        })
-
-    summary_path = os.path.join(best_model_dir, 'topk_summary.json')
-    with open(summary_path, 'w', encoding='utf-8') as file:
-        json.dump(summary, file, indent=4)
-
-    return summary
-
-
-def _load_topk_entries(best_model_dir):
-    summary_path = os.path.join(best_model_dir, 'topk_summary.json')
-    if not os.path.exists(summary_path):
-        return []
-
-    with open(summary_path, 'r', encoding='utf-8') as file:
-        data = json.load(file)
-
-    topk_entries = []
-    for item in data:
-        source_path = item.get("source_path")
-        if source_path and os.path.exists(source_path):
-            topk_entries.append({
-                "epoch": int(item["epoch"]),
-                "score": float(item["value"]),
-                "path": source_path,
-            })
-    topk_entries.sort(key=lambda entry: entry["score"], reverse=True)
-    return topk_entries
-
-
-def _maybe_save_topk_checkpoint(best_model_dir, topk_entries, score, epoch, args, model, optimizer, metrics, top_k=3):
-    if not np.isfinite(score):
-        return topk_entries, _refresh_topk_aliases(best_model_dir, topk_entries, top_k=top_k)
-
-    should_save = len(topk_entries) < top_k or score > topk_entries[-1]["score"]
-    if not should_save:
-        return topk_entries, _refresh_topk_aliases(best_model_dir, topk_entries, top_k=top_k)
-
-    checkpoint_name = f'epoch_{epoch:03d}_val_iou_{score:.6f}.pth'
-    checkpoint_path = os.path.join(best_model_dir, checkpoint_name)
-    _save_checkpoint(
-        checkpoint_path,
-        args=args,
-        model=model,
-        optimizer=optimizer,
-        epoch=epoch,
-        best_iou=score,
-        metrics=metrics,
-    )
-
-    updated_entries = [entry for entry in topk_entries if entry["epoch"] != epoch]
-    updated_entries.append({"epoch": epoch, "score": score, "path": checkpoint_path})
-    updated_entries.sort(key=lambda entry: entry["score"], reverse=True)
-
-    stale_entries = updated_entries[top_k:]
-    updated_entries = updated_entries[:top_k]
-
-    keep_paths = {entry["path"] for entry in updated_entries}
-    for stale_entry in stale_entries:
-        stale_path = stale_entry["path"]
-        if stale_path not in keep_paths and os.path.exists(stale_path):
-            os.remove(stale_path)
-
-    summary = _refresh_topk_aliases(best_model_dir, updated_entries, top_k=top_k)
-    return updated_entries, summary
 
 def load_model(args, model_best_or_final="best"):
     exp_save_dir= args.exp_save_dir
     model = build_model(args, input_channel=args.input_channel, num_classes=args.num_classes).to(device)
     if model_best_or_final == "best":
-        candidate_paths = [
-            os.path.join(exp_save_dir, 'best_models', 'checkpoint_top1.pth'),
-            os.path.join(exp_save_dir, 'checkpoint_best.pth'),
-        ]
+        candidate_paths = [os.path.join(exp_save_dir, 'best.pt')]
     else:
-        candidate_paths = [
-            os.path.join(exp_save_dir, 'checkpoint_last.pth'),
-            os.path.join(exp_save_dir, 'checkpoint_final.pth'),
-        ]
+        candidate_paths = [os.path.join(exp_save_dir, 'last.pt')]
 
     model_path = next((path for path in candidate_paths if os.path.exists(path)), None)
     if model_path is None:
@@ -496,63 +427,71 @@ def zero_shot(args,logger,model=None):
     return zero_shot_result
 
 
+def _safe_run_component(value):
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value).strip())
+    return value.strip("._-") or "run"
+
+
 def init_dir(args):
-    exp_name = (args.exp_name or "default_exp").strip() or "default_exp"
-    if args.output_dir:
-        base_output_dir = os.path.abspath(os.path.expanduser(args.output_dir))
-    else:
-        base_output_dir = os.path.abspath('./output')
+    default_name = f"{_safe_run_component(args.model)}_{_safe_run_component(args.dataset_name)}"
+    run_name = _safe_run_component(args.exp_name) if args.exp_name else default_name
+    output_root = Path(args.output_dir).expanduser().resolve() if args.output_dir else REPO_ROOT / "runs" / "segmentation"
+    exp_save_path = output_root if output_root.name == run_name else output_root / run_name
+    exp_save_path.mkdir(parents=True, exist_ok=True)
+    samples_path = exp_save_path / "samples"
+    samples_path.mkdir(exist_ok=True)
 
-    if os.path.basename(os.path.normpath(base_output_dir)) == exp_name:
-        exp_save_dir = base_output_dir
-    else:
-        exp_save_dir = os.path.join(base_output_dir, exp_name)
+    args.exp_name = run_name
+    args.exp_save_dir = str(exp_save_path)
+    args.samples_dir = str(samples_path)
 
-    os.makedirs(exp_save_dir, exist_ok=True)
-    args.exp_save_dir = exp_save_dir
+    if not args.resume and not args.just_for_test:
+        for filename in ("best.pt", "last.pt", "results.csv", "dashboard_segmentation.png", "segmentation_metrics.png"):
+            artifact = exp_save_path / filename
+            if artifact.is_file():
+                artifact.unlink()
+        for artifact in samples_path.glob("val_samples_e*.png"):
+            artifact.unlink()
 
-    log_dir = os.path.join(exp_save_dir, 'logs')
-    config_dir = os.path.join(exp_save_dir, 'configs')
-    best_model_dir = os.path.join(exp_save_dir, 'best_models')
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(config_dir, exist_ok=True)
-    os.makedirs(best_model_dir, exist_ok=True)
-    args.log_dir = log_dir
-    args.config_dir = config_dir
-    args.best_model_dir = best_model_dir
+    args_path = save_training_args(exp_save_path, vars(args), filename="args.yaml")
+    print(f"Config saved to {args_path}")
 
-    config_file_path = os.path.join(config_dir, 'config.json')
-    args_dict = vars(args)
-    with open(config_file_path, 'w') as f:
-        json.dump(args_dict, f, indent=4)
-    print(f"Config saved to {config_file_path}")
-    save_training_args(config_dir, args_dict)
-
-    log_file = os.path.join(log_dir, 'training.log')
     logger = setup_logger(
-        log_file=log_file,
-        logger_name=f"uknee.main.{args.model}.{args.dataset_name}.{args.exp_name}",
+        log_file=None,
+        logger_name=f"uknee.main.{args.model}.{args.dataset_name}.{run_name}",
     )
-    history_writer = EpochLogWriter(log_dir)
+    history_writer = EpochLogWriter(
+        exp_save_path,
+        file_stem="results",
+        fieldnames=RESULT_COLUMNS,
+        write_auxiliary=False,
+    )
     model = build_model(config=args,input_channel=args.input_channel, num_classes=args.num_classes).to(device)
     model = _wrap_data_parallel_if_needed(model, args, logger)
 
-    return exp_save_dir, log_dir, history_writer, logger, model
+    return str(exp_save_path), str(exp_save_path), history_writer, logger, model
 
 
-def validate(args,logger,model):
-    trainloader,valloader = getDataloader(args)
-    criterion, _ = _build_criterion(args)
-    avg_meters = {'loss': AverageMeter(),
-                'iou': AverageMeter(),
-                'val_loss': AverageMeter(),
-                'val_iou': AverageMeter(),
-                'SE': AverageMeter(),
-                'PC': AverageMeter(),
-                'F1': AverageMeter(),
-                'ACC': AverageMeter()
-                }
+def _dataset_class_names(dataset):
+    while hasattr(dataset, "dataset"):
+        dataset = dataset.dataset
+    class_info = getattr(dataset, "class_info", None)
+    if class_info:
+        return [item.get("name", f"Region {index}") for index, item in enumerate(class_info)]
+    return None
+
+
+def _validate_epoch(args, model, valloader, criterion, sample_indices=()):
+    val_loss = AverageMeter()
+    evaluator = SegmentationEvaluator(
+        num_classes=args.num_classes,
+        pixel_spacing_mm=args.pixel_spacing_mm,
+        class_names=_dataset_class_names(valloader.dataset),
+        sample_indices=sample_indices,
+        seed=args.seed,
+    )
     model.eval()
+    dataset_offset = 0
     with torch.no_grad():
         for i_batch, sampled_batch in enumerate(valloader):
             input, target = sampled_batch['image'], sampled_batch['label']
@@ -561,347 +500,167 @@ def validate(args,logger,model):
             output = model(input)
             output = output[-1] if args.do_deeps else output
             loss = criterion(output, target)
-            
-            iou, _, SE, PC, F1, _, ACC = get_metrics(output, target)
-            avg_meters['val_loss'].update(loss.item(), input.size(0))
-            avg_meters['val_iou'].update(iou, input.size(0))
-            avg_meters['SE'].update(SE, input.size(0))
-            avg_meters['PC'].update(PC, input.size(0))
-            avg_meters['F1'].update(F1, input.size(0))
-            avg_meters['ACC'].update(ACC, input.size(0))
+            if not torch.isfinite(output).all() or not torch.isfinite(loss):
+                raise RuntimeError(f"Non-finite validation result in batch {i_batch}")
+            val_loss.update(loss.item(), input.size(0))
+            evaluator.update(output, target, images=input, start_index=dataset_offset)
+            dataset_offset += input.size(0)
+    return _as_float(val_loss.avg), evaluator, evaluator.snapshot()
 
-    val_metric_dict = {
-        "val_loss":avg_meters['val_loss'].avg, "val_iou":avg_meters['val_iou'].avg, "val_SE":avg_meters['SE'].avg,
-            "val_PC":avg_meters['PC'].avg, "val_F1":avg_meters['F1'].avg, "val_ACC":avg_meters['ACC'].avg
+
+def validate(args,logger,model):
+    _, valloader = getDataloader(args)
+    criterion, _ = _build_criterion(args)
+    indices = SegmentationEvaluator.fixed_sample_indices(len(valloader.dataset), seed=2006)
+    val_loss, evaluator, snapshot = _validate_epoch(args, model, valloader, criterion, indices)
+    plot_segmentation_metrics(snapshot, Path(args.exp_save_dir) / "segmentation_metrics.png")
+    evaluator.save_samples(Path(args.samples_dir) / "val_samples_e0.png", epoch=0)
+    metrics = {
+        "val/loss": val_loss,
+        "val/dice": snapshot.dice,
+        "val/iou": snapshot.iou,
+        "val/hd95": snapshot.hd95,
+        "val/assd": snapshot.assd,
+        "val/sens": snapshot.sensitivity,
+        "val/prec": snapshot.precision,
     }
-    val_metric_dict = convert_to_numpy(val_metric_dict)
-    return val_metric_dict
+    logger.info("Validation metrics: %s", metrics)
+    return metrics
 
 
+def _read_history(results_path):
+    if not Path(results_path).is_file():
+        return []
+    rows = []
+    with Path(results_path).open("r", newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            rows.append({key: int(value) if key == "epoch" else float(value) for key, value in row.items()})
+    return rows
 
-def train(args,exp_save_dir, log_dir, history_writer, logger, model):
-    start_epoch = 0
+
+def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     trainloader, valloader = getDataloader(args)
-    best_model_dir = os.path.join(exp_save_dir, 'best_models')
-    plot_path = os.path.join(exp_save_dir, 'training_dashboard.png')
-
-    model_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info(f"model:{args.model} model_parameters:{model_parameters}")
-    logger.info(f"train file dir:{args.train_file_dir} val file dir:{args.val_file_dir}")
-    logger.info(f"output dir:{exp_save_dir}")
-    logger.info(f"{len(trainloader)} train iterations per epoch | {len(valloader)} validation iterations per epoch")
-    
     optimizer, base_lr, optimizer_name = _build_optimizer(args, model, logger)
     criterion, criterion_name = _build_criterion(args)
-    logger.info(f"optimizer:{optimizer_name} base_lr:{base_lr}")
-    logger.info(f"criterion:{criterion_name}")
-
-
-    train_metric_dict = {
-            "best_iou": 0,
-            "best_epoch": 0,
-            "best_iou_withSE": 0,
-            "best_iou_withPC": 0,
-            "best_iou_withF1": 0,
-            "best_iou_withACC": 0,
-            "last_iou": 0,
-            "last_SE": 0,
-            "last_PC": 0,
-            "last_F1": 0,
-            "last_ACC": 0
-    }
-
-    max_epoch = args.max_epochs
-    max_iterations = max(len(trainloader) * max_epoch, 1)
-    history_rows = []
-    topk_entries = _load_topk_entries(best_model_dir)
-    top_epochs = []
-    top_model_summary = []
-    last_lr = base_lr
+    run_dir = Path(exp_save_dir)
+    args.effective_lr = base_lr
+    args.optimizer = optimizer_name
+    args.criterion = criterion_name
+    save_training_args(run_dir, vars(args), filename="args.yaml")
+    results_path = run_dir / "results.csv"
+    history_rows = _read_history(results_path) if args.resume else []
+    start_epoch = 0
+    best_dice = max((row["val/dice"] for row in history_rows), default=-1.0)
 
     if args.pretrained_path:
-        if os.path.exists(args.pretrained_path):
-            logger.info(f"Loading pretrained weights from {args.pretrained_path}")
-            checkpoint = torch.load(args.pretrained_path, map_location=device, weights_only=False)
-            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                state_dict = checkpoint['state_dict']
-            elif isinstance(checkpoint, dict) and 'model' in checkpoint:
-                state_dict = checkpoint['model']
-            else:
-                state_dict = checkpoint
-            _load_model_state_dict(model, state_dict, logger=logger)
-            logger.info("Successfully loaded custom pretrained weights into model.")
-        else:
-            logger.warning(f"Pretrained weights file not found at: {args.pretrained_path}")
+        checkpoint = torch.load(args.pretrained_path, map_location=device, weights_only=False)
+        state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint)) if isinstance(checkpoint, dict) else checkpoint
+        _load_model_state_dict(model, state_dict, logger=logger)
     elif args.resume:
-        candidate_paths = [
-            os.path.join(exp_save_dir, 'checkpoint_last.pth'),
-            os.path.join(exp_save_dir, 'checkpoint_final.pth'),
-            os.path.join(exp_save_dir, 'checkpoint.pth'),
-        ]
-        checkpoint_path = next((path for path in candidate_paths if os.path.exists(path)), None)
-        if checkpoint_path is not None:
-            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-            _load_model_state_dict(model, checkpoint['state_dict'], logger=logger)
-            if checkpoint.get('optimizer') is not None:
-                optimizer.load_state_dict(checkpoint['optimizer'])
-            start_epoch = int(checkpoint['epoch'])
-            train_metric_dict["best_iou"] = float(checkpoint.get('best_iou', 0.0))
-            logger.info(f"Resuming training from epoch {start_epoch} with best IoU {train_metric_dict['best_iou']}")
+        checkpoint_path = run_dir / "last.pt"
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"Cannot resume: '{checkpoint_path}' does not exist")
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        _load_model_state_dict(model, checkpoint["state_dict"], logger=logger)
+        if checkpoint.get("optimizer") is not None:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        start_epoch = int(checkpoint.get("epoch", 0))
+        best_dice = float(checkpoint.get("best_dice", best_dice))
+        history_rows = [row for row in history_rows if int(row["epoch"]) <= start_epoch]
 
-    iter_num = start_epoch * len(trainloader)
+    logger.info("model=%s parameters=%d optimizer=%s criterion=%s output=%s",
+                args.model, sum(p.numel() for p in model.parameters() if p.requires_grad),
+                optimizer_name, criterion_name, run_dir)
+    logger.info("train_batches=%d val_batches=%d seed=%d pixel_spacing=%.4f mm/px",
+                len(trainloader), len(valloader), args.seed, args.pixel_spacing_mm)
 
-    for epoch_num in range(start_epoch, max_epoch):
-        model.train()
+    max_iterations = max(len(trainloader) * args.max_epochs, 1)
+    iteration = start_epoch * len(trainloader)
+    fixed_indices = SegmentationEvaluator.fixed_sample_indices(len(valloader.dataset), seed=2006)
+    training_started = time.time()
+    best_epoch = max((int(row["epoch"]) for row in history_rows if row["val/dice"] == best_dice), default=0)
+
+    for epoch_num in range(start_epoch, args.max_epochs):
         epoch_id = epoch_num + 1
-        epoch_start_time = time.time()
-        avg_meters = {'loss': AverageMeter(),
-                      'iou': AverageMeter(),
-                      'val_loss': AverageMeter(),
-                      'val_iou': AverageMeter(),
-                      'SE': AverageMeter(),
-                      'PC': AverageMeter(),
-                      'F1': AverageMeter(),
-                      'ACC': AverageMeter()
-                      }
-
-        current_lr = optimizer.param_groups[0]['lr']
-        logger.info("=" * 96)
-        logger.info(
-            "Epoch [%d/%d] started | optimizer=%s | lr=%.8f | train_batches=%d | val_batches=%d",
-            epoch_id,
-            max_epoch,
-            optimizer_name,
-            current_lr,
-            len(trainloader),
-            len(valloader),
-        )
-
-        train_progress = tqdm(
-            enumerate(trainloader),
-            total=len(trainloader),
-            desc=f"Epoch [{epoch_id}/{max_epoch}] Train",
-            dynamic_ncols=True,
-            leave=True,
-        )
-        for i_batch, sampled_batch in train_progress:
-            volume_batch, label_batch = sampled_batch['image'], sampled_batch['label']
-            volume_batch, label_batch = volume_batch.to(device), label_batch.to(device)
-
+        model.train()
+        train_loss = AverageMeter()
+        progress = tqdm(trainloader, desc=f"Epoch [{epoch_id}/{args.max_epochs}] Train", dynamic_ncols=True)
+        for sampled_batch in progress:
+            learning_rate = base_lr * max(1.0 - iteration / max_iterations, 0.0) ** 0.9
+            for group in optimizer.param_groups:
+                group["lr"] = learning_rate
+            images = sampled_batch["image"].to(device)
+            targets = sampled_batch["label"].to(device)
             if args.do_deeps:
-                outputs = model(volume_batch)
-                loss = deep_supervision_loss(outputs=outputs,label_batch=label_batch,loss_metric=criterion)
-                outputs=outputs[-1]
+                outputs = model(images)
+                loss = deep_supervision_loss(outputs, targets, criterion)
+                final_output = outputs[-1]
             else:
-                outputs = model(volume_batch)
-                loss = criterion(outputs, label_batch)
-
-            if not torch.isfinite(outputs).all():
-                train_progress.close()
-                _raise_non_finite_error(logger, epoch_id, i_batch, "non-finite outputs", volume_batch, label_batch, outputs)
-            if not torch.isfinite(loss):
-                train_progress.close()
-                _raise_non_finite_error(logger, epoch_id, i_batch, loss.detach(), volume_batch, label_batch, outputs)
-
-            iou, dice, _, _, _, _, _ = get_metrics(outputs, label_batch)
+                final_output = model(images)
+                loss = criterion(final_output, targets)
+            if not torch.isfinite(final_output).all() or not torch.isfinite(loss):
+                _raise_non_finite_error(logger, epoch_id, iteration, loss.detach(), images, targets, final_output)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            iteration += 1
+            train_loss.update(loss.item(), images.size(0))
+            progress.set_postfix(loss=f"{train_loss.avg:.4f}", lr=f"{learning_rate:.2e}")
 
-            lr_ = base_lr * (1.0 - iter_num / max_iterations) ** 0.9
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr_
-
-            iter_num += 1
-            last_lr = lr_
-            avg_meters['loss'].update(loss.item(), volume_batch.size(0))
-            avg_meters['iou'].update(iou, volume_batch.size(0))
-            train_progress.set_postfix(
-                loss=f"{avg_meters['loss'].avg:.4f}",
-                iou=f"{avg_meters['iou'].avg:.4f}",
-                lr=f"{last_lr:.2e}",
-            )
-        train_progress.close()
-
-        model.eval()
-        with torch.no_grad():
-            val_progress = tqdm(
-                enumerate(valloader),
-                total=len(valloader),
-                desc=f"Epoch [{epoch_id}/{max_epoch}] Val",
-                dynamic_ncols=True,
-                leave=True,
-            )
-            for i_batch, sampled_batch in val_progress:
-                input, target = sampled_batch['image'], sampled_batch['label']
-                input = input.to(device)
-                target = target.to(device)
-                output = model(input)
-                output = output[-1] if args.do_deeps else output
-                loss = criterion(output, target)
-
-                if not torch.isfinite(output).all():
-                    val_progress.close()
-                    _raise_non_finite_error(logger, epoch_id, i_batch, "non-finite val outputs", input, target, output)
-                if not torch.isfinite(loss):
-                    val_progress.close()
-                    _raise_non_finite_error(logger, epoch_id, i_batch, loss.detach(), input, target, output)
-                
-                iou, _, SE, PC, F1, _, ACC = get_metrics(output, target)
-                avg_meters['val_loss'].update(loss.item(), input.size(0))
-                avg_meters['val_iou'].update(iou, input.size(0))
-                avg_meters['SE'].update(SE, input.size(0))
-                avg_meters['PC'].update(PC, input.size(0))
-                avg_meters['F1'].update(F1, input.size(0))
-                avg_meters['ACC'].update(ACC, input.size(0))
-                val_progress.set_postfix(
-                    val_loss=f"{avg_meters['val_loss'].avg:.4f}",
-                    val_iou=f"{avg_meters['val_iou'].avg:.4f}",
-                    val_f1=f"{avg_meters['F1'].avg:.4f}",
-                )
-            val_progress.close()
-
+        val_loss, evaluator, snapshot = _validate_epoch(
+            args, model, valloader, criterion, sample_indices=fixed_indices
+        )
         epoch_row = {
             "epoch": epoch_id,
-            "lr": last_lr,
-            "train_loss": _as_float(avg_meters['loss'].avg),
-            "train_iou": _as_float(avg_meters['iou'].avg),
-            "val_loss": _as_float(avg_meters['val_loss'].avg),
-            "val_iou": _as_float(avg_meters['val_iou'].avg),
-            "val_SE": _as_float(avg_meters['SE'].avg),
-            "val_PC": _as_float(avg_meters['PC'].avg),
-            "val_F1": _as_float(avg_meters['F1'].avg),
-            "val_ACC": _as_float(avg_meters['ACC'].avg),
+            "train/loss": _as_float(train_loss.avg),
+            "val/loss": val_loss,
+            "val/dice": snapshot.dice,
+            "val/iou": snapshot.iou,
+            "val/hd95": snapshot.hd95,
+            "val/assd": snapshot.assd,
+            "val/sens": snapshot.sensitivity,
+            "val/prec": snapshot.precision,
         }
         history_rows.append(epoch_row)
         history_writer.append(epoch_row)
 
-        epoch_seconds = time.time() - epoch_start_time
+        _save_checkpoint(run_dir / "last.pt", args, model, optimizer, epoch_id, max(best_dice, snapshot.dice), epoch_row)
+        if snapshot.dice > best_dice:
+            best_dice = snapshot.dice
+            best_epoch = epoch_id
+            _save_checkpoint(run_dir / "best.pt", args, model, optimizer, epoch_id, best_dice, epoch_row)
 
-        if epoch_row["val_iou"] > train_metric_dict["best_iou"]:
-            train_metric_dict["best_iou"] = epoch_row["val_iou"]
-            train_metric_dict["best_epoch"] = epoch_id
-            train_metric_dict["best_iou_withSE"] = epoch_row["val_SE"]
-            train_metric_dict["best_iou_withPC"] = epoch_row["val_PC"]
-            train_metric_dict["best_iou_withF1"] = epoch_row["val_F1"]
-            train_metric_dict["best_iou_withACC"] = epoch_row["val_ACC"]
-
-        if epoch_num == max_epoch - 1:
-            train_metric_dict["last_iou"] = epoch_row["val_iou"]
-            train_metric_dict["last_SE"] = epoch_row["val_SE"]
-            train_metric_dict["last_PC"] = epoch_row["val_PC"]
-            train_metric_dict["last_F1"] = epoch_row["val_F1"]
-            train_metric_dict["last_ACC"] = epoch_row["val_ACC"]
-
-        checkpoint_path = os.path.join(exp_save_dir, 'checkpoint_last.pth')
-        _save_checkpoint(
-            checkpoint_path,
-            args=args,
-            model=model,
-            optimizer=optimizer,
-            epoch=epoch_id,
-            best_iou=train_metric_dict["best_iou"],
-            metrics=epoch_row,
-        )
-
-        topk_entries, top_model_summary = _maybe_save_topk_checkpoint(
-            best_model_dir=best_model_dir,
-            topk_entries=topk_entries,
-            score=epoch_row["val_iou"],
-            epoch=epoch_id,
-            args=args,
-            model=model,
-            optimizer=optimizer,
-            metrics=epoch_row,
-            top_k=3,
-        )
-
-        generated_plot_path, top_epochs = plot_training_dashboard(
-            log_dir=exp_save_dir,
+        evaluator.save_samples(run_dir / "samples" / f"val_samples_e{epoch_id}.png", epoch_id)
+        plot_segmentation_metrics(snapshot, run_dir / "segmentation_metrics.png")
+        plot_training_dashboard(
+            log_dir=run_dir,
             history_rows=history_rows,
-            loss_keys=[
-                ("train_loss", "Training Loss"),
-                ("val_loss", "Validation Loss"),
-            ],
+            loss_keys=[("train/loss", "Training Loss"), ("val/loss", "Validation Loss")],
             metric_keys=[
-                ("train_iou", "Train IoU"),
-                ("val_iou", "Val IoU"),
-                ("val_F1", "Val F1"),
-                ("val_SE", "Val Recall"),
-                ("val_PC", "Val Precision"),
-                ("val_ACC", "Val Accuracy"),
+                ("val/dice", "Val Dice"), ("val/iou", "Val IoU"),
+                ("val/hd95", "HD95"), ("val/assd", "ASSD"),
+                ("val/sens", "Sensitivity"), ("val/prec", "Precision"),
             ],
-            ranking_key="val_iou",
+            ranking_key="val/dice",
             maximize=True,
             top_k=3,
-            filename=os.path.basename(plot_path),
-            title=f"{args.model} | {args.dataset_name} | {args.exp_name}",
+            filename="dashboard_segmentation.png",
+            model_name=args.model,
+            title=f"{args.model} | {args.dataset_name}",
+            elapsed_seconds=time.time() - training_started,
         )
-
-        history_writer.write_summary({
-            "best_metrics": convert_to_numpy(train_metric_dict),
-            "top_epochs": top_epochs,
-            "top_models": top_model_summary,
-            "plot_path": str(generated_plot_path) if generated_plot_path else "",
-        })
-
         logger.info(
-            "Epoch [%d/%d] finished in %.1fs | train_loss=%.6f | train_iou=%.4f | "
-            "val_loss=%.6f | val_iou=%.4f | val_SE=%.4f | val_PC=%.4f | val_F1=%.4f | val_ACC=%.4f",
-            epoch_id,
-            max_epoch,
-            epoch_seconds,
-            epoch_row["train_loss"],
-            epoch_row["train_iou"],
-            epoch_row["val_loss"],
-            epoch_row["val_iou"],
-            epoch_row["val_SE"],
-            epoch_row["val_PC"],
-            epoch_row["val_F1"],
-            epoch_row["val_ACC"],
-        )
-        if top_model_summary:
-            logger.info(
-                "Current top models: %s",
-                ", ".join(
-                    f"Top{item['rank']} epoch {item['epoch']} = {item['value']:.4f}"
-                    for item in top_model_summary
-                ),
-            )
-
-
-    train_metric_dict=convert_to_numpy(train_metric_dict)
-    train_metric_dict["plot_path"] = str(plot_path)
-    train_metric_dict["log_dir"] = log_dir
-    train_metric_dict["best_model_dir"] = best_model_dir
-    train_metric_dict["config_dir"] = args.config_dir
-    if top_epochs:
-        train_metric_dict["top1_epoch"] = top_epochs[0]["epoch"]
-        train_metric_dict["top1_val_iou"] = top_epochs[0]["value"]
-    if len(top_epochs) > 1:
-        train_metric_dict["top2_epoch"] = top_epochs[1]["epoch"]
-        train_metric_dict["top2_val_iou"] = top_epochs[1]["value"]
-    if len(top_epochs) > 2:
-        train_metric_dict["top3_epoch"] = top_epochs[2]["epoch"]
-        train_metric_dict["top3_val_iou"] = top_epochs[2]["value"]
-    history_writer.write_summary({
-        "best_metrics": train_metric_dict,
-        "top_epochs": top_epochs,
-        "top_models": top_model_summary if 'top_model_summary' in locals() else [],
-        "plot_path": str(plot_path),
-    })
-    logger.info(f"Training completed. Best IoU: {train_metric_dict['best_iou']}, Best Epoch: {train_metric_dict['best_epoch']}, Best SE: {train_metric_dict['best_iou_withSE']}, Best PC: {train_metric_dict['best_iou_withPC']}, Best F1: {train_metric_dict['best_iou_withF1']}, Best ACC: {train_metric_dict['best_iou_withACC']}")
-    logger.info(f"Last IoU: {train_metric_dict['last_iou']}, Last SE: {train_metric_dict['last_SE']}, Last PC: {train_metric_dict['last_PC']}, Last F1: {train_metric_dict['last_F1']}, Last ACC: {train_metric_dict['last_ACC']}")
-    if top_epochs:
-        logger.info(
-            "Top epochs by val_iou: %s",
-            ", ".join(
-                f"Top{item['rank']} epoch {item['epoch']} = {item['value']:.4f}"
-                for item in top_epochs
-            ),
+            "Epoch %d/%d | train_loss=%.6f val_loss=%.6f dice=%.4f iou=%.4f "
+            "HD95=%.3fmm ASSD=%.3fmm sens=%.4f prec=%.4f",
+            epoch_id, args.max_epochs, epoch_row["train/loss"], val_loss, snapshot.dice,
+            snapshot.iou, snapshot.hd95, snapshot.assd, snapshot.sensitivity, snapshot.precision,
         )
 
-    return train_metric_dict
+    logger.info("Training complete: best Dice %.4f at epoch %d", best_dice, best_epoch)
+    return {"best_dice": best_dice, "best_epoch": best_epoch, "run_dir": str(run_dir)}
+
+
+
 
 
 
@@ -915,64 +674,19 @@ if __name__ == "__main__":
     _validate_runtime_config(args)
 
     exp_save_dir, log_dir, history_writer, logger, model = init_dir(args)
-    row_data=vars(args)
-
-
     if args.just_for_test:
-        if args.zero_shot_dataset_name != "":
-            csv_file = f"./result/result_{args.dataset_name}_2_{args.zero_shot_dataset_name}_test.csv"
-        else:
-            csv_file = f"./result/result_{args.dataset_name}_test.csv"
-
-        ensure_parent_dir(csv_file)
-        file_exists = os.path.isfile(csv_file)
         model, model_path = load_model(args, model_best_or_final="best")
-        print(f"Just for test, skipping training. loading model form best checkpoint. Model loaded from {model_path}")
-        val_metric_dict = validate(args,logger, model)
-        if args.zero_shot_dataset_name !="":
-            zeroshot_result=zero_shot(args,logger, model)
-        else:
-            zeroshot_result=None
-        if val_metric_dict:
-            row_data.update(val_metric_dict)
-        if zeroshot_result:
-            row_data.update(zeroshot_result)
-
-        with open(csv_file, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=row_data.keys())
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow(row_data)
-        exit()
+        print(f"Test-only mode: loaded {model_path}")
+        validate(args, logger, model)
+        if args.zero_shot_dataset_name:
+            zero_shot(args, logger, model)
+        raise SystemExit(0)
     try:
-        csv_file = f"./result/result_{args.dataset_name}_train.csv"
-        ensure_parent_dir(csv_file)
-        file_exists = os.path.isfile(csv_file)
-        train_metric_dict = train(args,exp_save_dir, log_dir, history_writer, logger, model)
-        if args.zero_shot_dataset_name !="":
-            zeroshot_result=zero_shot(args,logger, model)
-        else:
-            zeroshot_result=None
-        if train_metric_dict:
-            row_data.update(train_metric_dict)
-        if zeroshot_result:
-            row_data.update(zeroshot_result)
-        with open(csv_file, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=row_data.keys())
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow(row_data)
+        train(args, exp_save_dir, log_dir, history_writer, logger, model)
+        if args.zero_shot_dataset_name:
+            zero_shot(args, logger, model)
         print(f"Model {args.model} training finished successfully")
     except Exception as e:
-        row_data.update({"Error": str(e)})
-        error_row = row_data.copy()
-        error_log_file = "./ERROR.log"
-        error_log_exists = os.path.isfile(error_log_file)
-        with open(error_log_file, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=error_row.keys())
-            if not error_log_exists:
-                writer.writeheader()
-            writer.writerow(error_row)
         logger.exception("Training failed with an exception.")
         traceback.print_exc()
         print(f"Model {args.model} failed: {str(e)}")

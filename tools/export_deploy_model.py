@@ -48,7 +48,7 @@ def parse_args():
         "--checkpoint",
         type=str,
         required=True,
-        help="Checkpoint file path or experiment directory containing best_models/checkpoint_top1.pth.",
+        help="Checkpoint file path or flat run directory containing best.pt/last.pt.",
     )
     parser.add_argument("--data_dir", type=str, required=True, help="Dataset root with images/ and masks/")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save exported model and preview")
@@ -76,6 +76,8 @@ def resolve_checkpoint_path(checkpoint_arg: str):
 
     if checkpoint_path.is_dir():
         candidates = [
+            checkpoint_path / "best.pt",
+            checkpoint_path / "last.pt",
             checkpoint_path / "best_models" / "checkpoint_top1.pth",
             checkpoint_path / "checkpoint_last.pth",
             checkpoint_path / "checkpoint_final.pth",
@@ -93,14 +95,22 @@ def load_checkpoint_config(checkpoint_path: Path):
     config_dict = checkpoint.get("config")
 
     if config_dict is None:
-        config_path = checkpoint_path.parent.parent / "configs" / "config.json"
-        if config_path.is_file():
-            with config_path.open("r", encoding="utf-8") as file:
-                config_dict = json.load(file)
-        else:
+        config_paths = [
+            checkpoint_path.parent / "args.yaml",
+            checkpoint_path.parent.parent / "configs" / "config.json",
+        ]
+        config_path = next((path for path in config_paths if path.is_file()), None)
+        if config_path is None:
             raise KeyError(
-                f"Checkpoint '{checkpoint_path}' does not contain config and no config.json was found nearby."
+                f"Checkpoint '{checkpoint_path}' does not contain config and no args.yaml/config.json was found nearby."
             )
+        with config_path.open("r", encoding="utf-8") as file:
+            if config_path.suffix in {".yaml", ".yml"}:
+                import yaml
+
+                config_dict = yaml.safe_load(file)
+            else:
+                config_dict = json.load(file)
 
     return checkpoint, SimpleNamespace(**config_dict)
 

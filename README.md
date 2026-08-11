@@ -192,6 +192,15 @@ python main_multi3d.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --b
 python main_multi3d.py --max_epochs 300 --gpu 0 --batch_size 8 --model U_Net --base_dir ./data/ACDC--dataset_name ACDC --num_classes 4 --input_channel 3 --val_interval 100
 ```
 
+Mỗi lượt train 2D được lưu mặc định tại
+`runs/segmentation/<model>_<dataset>/` (có thể đổi tên bằng `--exp_name`).
+Thư mục run chỉ gồm `best.pt`, `last.pt`, `results.csv`, `args.yaml`,
+`dashboard_segmentation.png`, `segmentation_metrics.png` và thư mục `samples/`.
+`best.pt` được chọn theo Dice validation cao nhất; `last.pt` chứa optimizer và epoch
+để chạy tiếp bằng `--resume`. Bốn ảnh validation dùng để so sánh giữa các epoch
+được cố định bằng seed 2006. HD95/ASSD dùng `--pixel_spacing_mm` (mặc định
+`0.10` mm/px).
+
 #### 4. In-domain Inference
 
 U-Bench Model Zoo [[Quick Access](https://huggingface.co/FengheTan9/U-Bench)]

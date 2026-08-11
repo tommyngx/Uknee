@@ -12,11 +12,11 @@ class CliTests(unittest.TestCase):
                 "--model", "landmark/cfg/models/yolo26-pose-v9.yaml",
                 "--data", "landmark/cfg/datasets/mesko4gf2.yaml",
                 "--epochs", "100", "--imgsz", "640", "--batch", "16",
-                "--device", "0", "--project", "landmark/runs/pose", "--name", "pose-v9",
+                "--device", "0",
             ]
         )
         self.assertEqual(args.epochs, 100)
-        self.assertEqual(args.name, "pose-v9")
+        self.assertFalse(hasattr(args, "name"))
 
     def test_native_key_value_overrides(self):
         self.assertEqual(

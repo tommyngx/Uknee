@@ -1,5 +1,6 @@
 # Paths are resolved relative to the repository by landmark.data.prepare.
 path: Ref/yolo_mesko4GF2
+dataset_name: mesko
 train: images/train
 val: images/train
 test: images/train
@@ -25,4 +26,3 @@ landmark_path_ranges:
   - [120, 129]
 val_fraction: 0.15
 split_seed: 2006
-

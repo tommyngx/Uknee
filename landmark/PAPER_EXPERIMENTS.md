@@ -1,8 +1,8 @@
 # Paper experiment protocol
 
 Use one immutable dataset split, `seed=2006`, identical `imgsz`, epochs, batch
-and hardware for all ablations. Archive the run's `args.yaml`,
-`dataset_resolved.yaml`, `results.csv`, `best.pt`, `best_mre.pt`, exported
+and hardware for all ablations. Archive the run's `args.yaml`, `results.csv`,
+`best.pt`, `last.pt`, both consolidated dashboards, exported
 state-dict and environment metadata.
 
 ## Primary ablation
@@ -12,8 +12,7 @@ for model in yolo26-pose yolo26-pose-v1 yolo26-pose-v9; do
   python -m landmark.train \
     --model landmark/cfg/models/${model}.yaml \
     --data landmark/cfg/datasets/mesko4gf2.yaml \
-    --epochs 100 --imgsz 640 --batch 16 --device 0 \
-    --seed 2006 --project landmark/runs/paper --name ${model}
+    --epochs 100 --imgsz 640 --batch 16 --device 0 --seed 2006
 done
 ```
 

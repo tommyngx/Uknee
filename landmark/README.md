@@ -33,8 +33,7 @@ Single process:
 python -m landmark.train \
   --model landmark/cfg/models/yolo26-pose-v9.yaml \
   --data landmark/cfg/datasets/mesko4gf2.yaml \
-  --epochs 100 --imgsz 640 --batch 16 --device 0 \
-  --project landmark/runs/pose --name pose-v9
+  --epochs 100 --imgsz 640 --batch 16 --device 0
 ```
 
 Two-process DDP:
@@ -88,8 +87,11 @@ padded slots have zero confidence. ONNX and TorchScript export return fixed
 
 Training keeps upstream AMP, EMA, nominal-batch accumulation, optimizer auto,
 warmup/scheduler, scaled weight decay, early stopping, resume and DDP sampler.
-It writes `last.pt`, `best.pt`, and a separate `best_mre.pt`. Use
-`export_state_dict()` for a weights-only paper archive.
+Every run is written to `runs/landmark/<model>_<dataset>/`; `best.pt` is selected
+by minimum validation MRE and `last.pt` remains resumable. The root also contains
+`args.yaml`, compact `results.csv`, `dashboard_pose.png`, `pose_metrics.png`, and
+the deterministic per-epoch grids under `samples/`. No default Ultralytics plot
+files are emitted. Use `export_state_dict()` for a weights-only paper archive.
 
 See [architecture](skill/architecture.md),
 [paper experiments](PAPER_EXPERIMENTS.md), and
