@@ -29,16 +29,16 @@ class ModelAndExportTests(unittest.TestCase):
             "bboxes": torch.tensor([[0.5, 0.5, 0.6, 0.5]]).repeat(4, 1),
         }
 
-    def test_three_yolo_heads_build_with_scale_n(self):
+    def test_three_yolo_heads_build_with_configured_default_scale(self):
         expected = {
-            "yolo26-pose.yaml": "Pose26",
-            "yolo26-pose-v1.yaml": "OA26HeatmapPose",
-            "yolo26-pose-v9.yaml": "OA26RegionRefinePose",
+            "yolo26-pose.yaml": ("Pose26", "n"),
+            "yolo26-pose-v1.yaml": ("OA26HeatmapPose", "n"),
+            "yolo26-pose-v9.yaml": ("OA26RegionRefinePose", "x"),
         }
-        for filename, head_name in expected.items():
+        for filename, (head_name, scale) in expected.items():
             wrapper = KneePose(ROOT / "cfg" / "models" / filename)
             self.assertEqual(type(wrapper.model.model[-1]).__name__, head_name)
-            self.assertEqual(wrapper.model.yaml["scale"], "n")
+            self.assertEqual(wrapper.model.yaml["scale"], scale)
 
     def test_heatmap_models_have_full_architectures_and_gradients(self):
         for filename, architecture in (

@@ -62,6 +62,9 @@ nhận folder, chương trình tìm `data.yaml`, `dataset.yaml` hoặc YAML đ�
 sau đó tạo bản runtime tại `<project>/.uknee/datasets` với `path` tuyệt đối.
 Nếu folder chưa có YAML, schema landmark 4 vùng/51 keypoint được tạo tự động.
 
+`yolo26-pose-v9` mặc định dùng compound scale `x`; vì vậy CLI vẫn ghi
+`--model yolo26-pose-v9`, không thêm chữ `x` vào tên model.
+
 Đường dẫn dataset rút gọn `--dataset /mesko_landmark` hoặc
 `--dataset mesko_landmark` được hiểu là
 `<project>/data/mesko_landmark` nếu đường dẫn được truyền không tồn tại.
