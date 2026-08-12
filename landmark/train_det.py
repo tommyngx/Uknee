@@ -12,6 +12,7 @@ from copy import copy
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any, Iterable
 
 import yaml
@@ -52,7 +53,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from landmark.core import RANK
+from landmark.core import LOGGER, RANK
 from landmark.core.detect import DetectionTrainer, DetectionValidator
 from landmark.core.torch_utils import unwrap_model
 
@@ -473,25 +474,88 @@ class DetectionReportTrainer(DetectionTrainer):
         return validator
 
     def validate(self):
+        # BaseValidator narrows plots to selected epochs in-place. Restore the
+        # requested value so each epoch can still produce our report sample.
+        self.validator.args.plots = bool(self.args.plots)
         self.validator._report_epoch = max(int(self.epoch) + 1, 1)
-        return super().validate()
+        result = super().validate()
+        if RANK in {-1, 0} and result[0] is not None:
+            self._write_detection_metrics()
+        return result
+
+    def _write_detection_metrics(self) -> None:
+        from landmark.core.plotting_det import plot_detection_metrics
+
+        metrics = getattr(self.validator, "metrics", None)
+        names = getattr(metrics, "names", None) or self.data.get("names", {})
+        class_names = [str(names[index]) for index in sorted(names)] if isinstance(names, dict) else list(names)
+        plot_detection_metrics(
+            metrics,
+            self.save_dir / "detection_metrics.png",
+            model_name=Path(str(self.args.model)).stem,
+            epochs_completed=max(int(self.epoch) + 1, 1),
+            class_names=class_names,
+        )
+
+    def save_metrics(self, metrics: dict[str, Any]) -> None:
+        """Write native CSV and refresh the dashboard after every epoch."""
+        super().save_metrics(metrics)
+        if RANK in {-1, 0}:
+            from landmark.core.plotting_det import plot_dashboard_detection
+
+            plot_dashboard_detection(
+                self.csv,
+                self.save_dir / "detection_dashboard.png",
+                model_name=Path(str(self.args.model)).stem,
+                elapsed_seconds=max(time.time() - getattr(self, "train_time_start", time.time()), 0.0),
+            )
+
+    def _export_detection_onnx(self) -> Path | None:
+        if not bool(getattr(self.args, "auto_export_onnx", True)) or not self.best.is_file():
+            return None
+        from landmark.core.exporter import Exporter
+        from landmark.core.model import YOLO
+        from landmark.utils.exporting import KneeDetectionExportWrapper
+
+        source = Path(str(self.args.model))
+        destination = self.wdir / f"{source.stem.replace('-', '_')}.onnx"
+        best_model = YOLO(str(self.best), verbose=False)
+        wrapper = KneeDetectionExportWrapper(best_model.model.cpu(), confidence=0.25).eval()
+        image_hw = parse_image_size(self.args.imgsz)
+        strides = getattr(wrapper, "stride", torch.tensor([8, 16, 32])).detach().cpu().tolist()
+        available_anchors = sum(max(image_hw[0] // int(s), 1) * max(image_hw[1] // int(s), 1) for s in strides)
+        export_max_det = min(int(getattr(self.args, "max_det", 300)), available_anchors)
+        return Exporter(
+            {
+                "format": "onnx",
+                "imgsz": self.args.imgsz,
+                "batch": 1,
+                "dynamic": bool(getattr(self.args, "dynamic", False)),
+                "simplify": bool(getattr(self.args, "simplify", True)),
+                "max_det": export_max_det,
+                "path": destination,
+                "model_name": source.stem,
+                "source_checkpoint": "weights/best.pt",
+            }
+        )(wrapper)
+
+    def save_model(self):
+        """Keep an ONNX deployment copy synchronized with best.pt during DDP."""
+        best_updated = self.best_fitness == self.fitness
+        saved = super().save_model()
+        if saved and best_updated and RANK in {-1, 0}:
+            try:
+                self._export_detection_onnx()
+            except Exception as error:
+                LOGGER.warning(f"Detection ONNX export deferred until training completes: {error}")
+        return saved
 
     def final_eval(self) -> None:
         """Run native best-checkpoint validation and persist its rich detection report on rank zero."""
         super().final_eval()
         metrics = getattr(getattr(self, "validator", None), "metrics", None)
         if RANK in {-1, 0} and metrics is not None:
-            from landmark.core.plotting_det import plot_detection_metrics
-
-            names = getattr(metrics, "names", None) or self.data.get("names", {})
-            class_names = [str(names[index]) for index in sorted(names)] if isinstance(names, dict) else list(names)
-            plot_detection_metrics(
-                metrics,
-                self.save_dir / "detection_metrics.png",
-                model_name=Path(str(self.args.model)).stem,
-                epochs_completed=max(int(self.epoch) + 1, 1),
-                class_names=class_names,
-            )
+            self._write_detection_metrics()
 
 
 def _clean_row(row: dict[str, str]) -> dict[str, float | int]:
@@ -713,8 +777,6 @@ def write_detection_summary(
 
 
 def main(argv: list[str] | None = None) -> Any:
-    import time
-
     parsed = vars(build_parser().parse_args(argv))
     project = Path(parsed.pop("project")).expanduser().resolve()
     model_path = resolve_model_source(parsed.pop("model"))
@@ -763,28 +825,28 @@ def main(argv: list[str] | None = None) -> Any:
     metrics = model.train(trainer=DetectionReportTrainer, **config)
     elapsed_seconds = time.time() - start_time
     save_dir = Path(model.trainer.save_dir)
-    onnx_path: Path | None = None
+    onnx_path = save_dir / "weights" / f"{model_path.stem.replace('-', '_')}.onnx"
+    # Always finalize plots/summary first, so an optional ONNX failure cannot
+    # suppress the other contract artifacts.
+    write_detection_summary(
+        save_dir,
+        model_path,
+        audit,
+        onnx_path if onnx_path.is_file() else None,
+        elapsed_seconds=elapsed_seconds,
+        trainer=model.trainer,
+        trained_model=model.model,
+        validation_metrics=model.metrics,
+    )
     if config.get("auto_export_onnx") and model.trainer.best.is_file():
-        from landmark.core.exporter import Exporter
-        from landmark.utils.exporting import KneeDetectionExportWrapper
-
-        onnx_path = save_dir / "weights" / f"{model_path.stem.replace('-', '_')}.onnx"
-        # Export the checkpoint selected by mAP50-95, not the in-memory last epoch.
-        best_model = YOLO(str(model.trainer.best), verbose=False)
-        wrapper = KneeDetectionExportWrapper(best_model.model, confidence=0.25).eval()
-        onnx_path = Exporter(
-            {
-                "format": "onnx",
-                "imgsz": config["imgsz"],
-                "batch": 1,
-                "dynamic": bool(config.get("dynamic", False)),
-                "simplify": bool(config.get("simplify", True)),
-                "max_det": int(config.get("max_det", 300)),
-                "path": onnx_path,
-                "model_name": model_path.stem,
-                "source_checkpoint": "weights/best.pt",
-            }
-        )(wrapper)
+        if not onnx_path.is_file() or onnx_path.stat().st_mtime_ns < model.trainer.best.stat().st_mtime_ns:
+            try:
+                onnx_path = model.trainer._export_detection_onnx()
+            except Exception as error:
+                LOGGER.warning(f"Detection ONNX export failed; other reports remain available: {error}")
+                onnx_path = None
+    else:
+        onnx_path = onnx_path if onnx_path.is_file() else None
     summary = write_detection_summary(
         save_dir,
         model_path,
