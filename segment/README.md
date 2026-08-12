@@ -63,7 +63,10 @@ thiết được tạo bằng `parents=True, exist_ok=True`.
 Tên phiên bản hiện tại:
 
 - `RWKV_UNetV5`: bản MedAxial gọn trước đây có tên V6.
-- `RWKV_UNetV6`: bản matrix-state full trước đây nằm trong `RWKV_UNetV6_full.py`.
+- `RWKV_UNetV6`: bản matrix-state full trước đây nằm trong
+  `RWKV_UNetV6_full.py`, đã cân lại còn khoảng `19.70M` tham số (`+15.9%` so
+  với V3 `17.00M`). Cấu hình giữ width nông `48/72` và giảm phần tốn tài
+  nguyên ở tầng sâu: `depths=(2,2,3,2)`, `dims=(48,72,136,216)`.
 - ONNX tương ứng là `rwkv_unetv5.onnx` và `rwkv_unetv6.onnx`.
 
 Checkpoint của run V6 gọn cũ phải resume bằng `--model RWKV_UNetV5`; loader

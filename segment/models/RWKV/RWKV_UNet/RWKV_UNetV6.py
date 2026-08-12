@@ -8,6 +8,15 @@ import torch.nn.functional as F
 from timm.layers import DropPath
 
 
+# Keep the full matrix-state RWKV-6 design within the requested model budget.
+# The shallow widths are intentionally preserved for fine medical-image edges;
+# most of the reduction is applied to the expensive deep encoder stages.
+DEFAULT_DEPTHS = (2, 2, 3, 2)
+DEFAULT_EMBED_DIMS = (48, 72, 136, 216)
+DEFAULT_EXP_RATIOS = (2.0, 2.25, 2.5, 2.5)
+DEFAULT_NUM_HEADS = (1, 1, 4, 6)
+
+
 class DynamicLerpV6(nn.Module):
     """
     Input-dependent interpolation for RWKV-6-inspired branches.
@@ -627,10 +636,10 @@ class RWKV6UNetEncoder(nn.Module):
         self,
         input_channels: int = 3,
         stem_dim: int = 24,
-        depths: Tuple[int, ...] = (2, 2, 4, 2),
-        embed_dims: Tuple[int, ...] = (48, 72, 144, 240),
-        exp_ratios: Tuple[float, ...] = (2.0, 2.5, 3.0, 3.0),
-        num_heads: Tuple[int, ...] = (1, 1, 4, 6),
+        depths: Tuple[int, ...] = DEFAULT_DEPTHS,
+        embed_dims: Tuple[int, ...] = DEFAULT_EMBED_DIMS,
+        exp_ratios: Tuple[float, ...] = DEFAULT_EXP_RATIOS,
+        num_heads: Tuple[int, ...] = DEFAULT_NUM_HEADS,
         drop_path_rate: float = 0.1,
     ) -> None:
         super().__init__()
@@ -793,6 +802,7 @@ class RWKV_UNetV6(nn.Module):
     - No custom CUDA extension is required.
     - Matrix-valued recurrence is implemented in plain PyTorch.
     - The recurrent scan is only enabled in deeper encoder stages.
+    - The default configuration is parameter-budgeted to stay below 1.2x V3.
     - Practical input resolution is limited by memory and runtime.
     """
 
@@ -801,10 +811,10 @@ class RWKV_UNetV6(nn.Module):
         input_channels: int = 3,
         num_classes: int = 1,
         stem_dim: int = 24,
-        depths: Tuple[int, ...] = (2, 2, 4, 2),
-        embed_dims: Tuple[int, ...] = (48, 72, 144, 240),
-        exp_ratios: Tuple[float, ...] = (2.0, 2.5, 3.0, 3.0),
-        num_heads: Tuple[int, ...] = (1, 1, 4, 6),
+        depths: Tuple[int, ...] = DEFAULT_DEPTHS,
+        embed_dims: Tuple[int, ...] = DEFAULT_EMBED_DIMS,
+        exp_ratios: Tuple[float, ...] = DEFAULT_EXP_RATIOS,
+        num_heads: Tuple[int, ...] = DEFAULT_NUM_HEADS,
         drop_path_rate: float = 0.1,
     ) -> None:
         super().__init__()

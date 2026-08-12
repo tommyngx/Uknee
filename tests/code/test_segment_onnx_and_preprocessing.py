@@ -77,6 +77,18 @@ class SegmentONNXAndPreprocessingTests(unittest.TestCase):
         self.assertEqual(onnx_filename("RWKV_UNetV5"), "rwkv_unetv5.onnx")
         self.assertEqual(onnx_filename("RWKV_UNetV6"), "rwkv_unetv6.onnx")
 
+    def test_rwkv_v6_default_stays_within_twenty_percent_of_v3(self):
+        from segment.models.RWKV.RWKV_UNet.RWKV_UNetV3 import rwkv_unetv3
+        from segment.models.RWKV.RWKV_UNet.RWKV_UNetV6 import rwkv_unet_v6
+
+        v3 = rwkv_unetv3(input_channel=3, num_classes=11)
+        v6 = rwkv_unet_v6(input_channel=3, num_classes=11)
+        v3_parameters = sum(parameter.numel() for parameter in v3.parameters())
+        v6_parameters = sum(parameter.numel() for parameter in v6.parameters())
+
+        self.assertGreater(v6_parameters, v3_parameters)
+        self.assertLessEqual(v6_parameters, int(v3_parameters * 1.20))
+
     def test_parity_accepts_small_backend_drift_but_rejects_changed_masks(self):
         expected = np.zeros((1, 3, 16, 16), dtype=np.float32)
         expected[:, 0] = 1.0
