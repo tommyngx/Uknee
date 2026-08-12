@@ -52,7 +52,12 @@ def generate_ddp_file(trainer: BaseTrainer) -> str:
         - Model path configuration
         - Training initialization code
     """
-    module, name = f"{trainer.__class__.__module__}.{trainer.__class__.__name__}".rsplit(".", 1)
+    trainer_class = trainer.__class__
+    # ``python -m package.module`` defines classes under ``__main__``. That
+    # namespace points at this generated file inside torchrun, so custom
+    # trainers may declare their stable import module explicitly for DDP.
+    module = str(getattr(trainer_class, "__ddp_module__", trainer_class.__module__))
+    name = trainer_class.__name__
 
     # Serialize augmentations to JSON-safe dicts to avoid NameError in DDP subprocess
     overrides = vars(trainer.args).copy()

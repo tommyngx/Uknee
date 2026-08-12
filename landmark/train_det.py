@@ -456,6 +456,11 @@ class DetectionReportValidator(DetectionValidator):
 class DetectionReportTrainer(DetectionTrainer):
     """Detection trainer retaining the native loop while adding report artifacts."""
 
+    # When this file is launched with ``python -m landmark.train_det``, Python
+    # reports the class module as ``__main__``. Torchrun needs the canonical
+    # import path because its generated launcher becomes the new ``__main__``.
+    __ddp_module__ = "landmark.train_det"
+
     def get_validator(self) -> DetectionReportValidator:
         self.loss_names = "box_loss", "cls_loss", "dfl_loss"
         validator = DetectionReportValidator(
@@ -471,6 +476,23 @@ class DetectionReportTrainer(DetectionTrainer):
         self.validator._report_epoch = max(int(self.epoch) + 1, 1)
         return super().validate()
 
+    def final_eval(self) -> None:
+        """Run native best-checkpoint validation and persist its rich detection report on rank zero."""
+        super().final_eval()
+        metrics = getattr(getattr(self, "validator", None), "metrics", None)
+        if RANK in {-1, 0} and metrics is not None:
+            from landmark.core.plotting_det import plot_detection_metrics
+
+            names = getattr(metrics, "names", None) or self.data.get("names", {})
+            class_names = [str(names[index]) for index in sorted(names)] if isinstance(names, dict) else list(names)
+            plot_detection_metrics(
+                metrics,
+                self.save_dir / "detection_metrics.png",
+                model_name=Path(str(self.args.model)).stem,
+                epochs_completed=max(int(self.epoch) + 1, 1),
+                class_names=class_names,
+            )
+
 
 def _clean_row(row: dict[str, str]) -> dict[str, float | int]:
     cleaned: dict[str, float | int] = {}
@@ -484,6 +506,8 @@ def _clean_row(row: dict[str, str]) -> dict[str, float | int]:
 
 
 def _scalar_metrics(values: Any) -> dict[str, float]:
+    if not isinstance(values, dict) and hasattr(values, "results_dict"):
+        values = values.results_dict
     if not isinstance(values, dict):
         return {}
     return {
@@ -500,6 +524,8 @@ def write_detection_summary(
     onnx: Path | None = None,
     elapsed_seconds: float | None = None,
     trainer: DetectionTrainer | None = None,
+    trained_model: torch.nn.Module | None = None,
+    validation_metrics: Any = None,
 ) -> Path:
     csv_path = save_dir / "results.csv"
     rows: list[dict[str, float | int]] = []
@@ -521,14 +547,19 @@ def write_detection_summary(
                 elapsed_seconds=elapsed_seconds,
             )
             class_names = list(audit.get("class_instances", {}).keys()) or ["RightKnee", "LeftKnee"]
-            plot_detection_metrics(
-                getattr(getattr(trainer, "validator", None), "metrics", None),
-                save_dir / "detection_metrics.png",
-                model_name=model_path.stem,
-                elapsed_seconds=elapsed_seconds,
-                epochs_completed=len(rows),
-                class_names=class_names,
-            )
+            report_metrics = getattr(getattr(trainer, "validator", None), "metrics", None)
+            metric_report = save_dir / "detection_metrics.png"
+            # Under DDP the parent trainer has no validator object. Rank zero
+            # already writes the rich report inside final_eval(), so preserve it.
+            if report_metrics is not None or not metric_report.is_file():
+                plot_detection_metrics(
+                    report_metrics,
+                    metric_report,
+                    model_name=model_path.stem,
+                    elapsed_seconds=elapsed_seconds,
+                    epochs_completed=len(rows),
+                    class_names=class_names,
+                )
         except Exception as error:
             print(f"Warning: Failed to generate detection report plots: {error}")
 
@@ -540,10 +571,20 @@ def write_detection_summary(
     )
     sample_paths = list(getattr(getattr(trainer, "validator", None), "_sample_paths", []))
     sample_files = sorted((save_dir / "samples").glob("detection_sample_e*.png"))
+    if sample_files and not sample_paths:
+        try:
+            resolved = _load_yaml(audit["resolved_yaml"])
+            val_manifest = Path(resolved["val"])
+            sample_paths = [Path(line).name for line in val_manifest.read_text(encoding="utf-8").splitlines()[:4]]
+        except (KeyError, OSError, TypeError, ValueError):
+            sample_paths = []
     args = getattr(trainer, "args", None)
     image_size = parse_image_size(getattr(args, "imgsz", [640, 640]))
     height, width = image_size
-    model = unwrap_model(getattr(trainer, "model", None)) if trainer is not None else None
+    model = trained_model
+    if model is None and trainer is not None and isinstance(getattr(trainer, "model", None), torch.nn.Module):
+        model = getattr(trainer, "model")
+    model = unwrap_model(model) if model is not None else None
     parameters = sum(parameter.numel() for parameter in model.parameters()) if model is not None else None
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad) if model is not None else None
     try:
@@ -554,7 +595,10 @@ def write_detection_summary(
         gflops = None
     epochs_completed = len(rows)
     duration = float(elapsed_seconds or 0.0)
-    final_validation = _scalar_metrics(getattr(trainer, "metrics", {}))
+    final_validation = _scalar_metrics(
+        validation_metrics if validation_metrics is not None else getattr(trainer, "metrics", {})
+    )
+    optimizer = getattr(trainer, "optimizer", None)
 
     onnx_record: dict[str, Any] = {"status": "disabled"}
     if onnx and onnx.is_file():
@@ -626,10 +670,10 @@ def write_detection_summary(
             "epochs_completed": epochs_completed,
             "batch_size": int(getattr(args, "batch", 0)),
             "seed": int(getattr(args, "seed", 0)),
-            "optimizer": type(getattr(trainer, "optimizer", None)).__name__ if trainer is not None else None,
+            "optimizer": type(optimizer).__name__ if optimizer is not None else str(getattr(args, "optimizer", "")),
             "initial_learning_rate": float(
-                getattr(trainer, "optimizer", None).param_groups[0].get("initial_lr", getattr(args, "lr0", 0.0))
-                if trainer is not None and getattr(trainer, "optimizer", None) is not None
+                optimizer.param_groups[0].get("initial_lr", getattr(args, "lr0", 0.0))
+                if optimizer is not None
                 else getattr(args, "lr0", 0.0)
             ),
             "configured_initial_learning_rate": float(getattr(args, "lr0", 0.0)),
@@ -748,6 +792,8 @@ def main(argv: list[str] | None = None) -> Any:
         onnx_path,
         elapsed_seconds=elapsed_seconds,
         trainer=model.trainer,
+        trained_model=model.model,
+        validation_metrics=model.metrics,
     )
     print(f"Detection summary: {summary}")
     return metrics

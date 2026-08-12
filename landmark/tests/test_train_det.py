@@ -3,12 +3,21 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 import yaml
 from PIL import Image
 
-from landmark.train_det import DEFAULT_CFG, _load_yaml, _xray_detection_defaults, prepare_detection_dataset
+from landmark.train_det import (
+    DEFAULT_CFG,
+    DetectionReportTrainer,
+    _load_yaml,
+    _xray_detection_defaults,
+    prepare_detection_dataset,
+    write_detection_summary,
+)
 from landmark.utils.exporting import KneeDetectionExportWrapper
 
 
@@ -40,7 +49,7 @@ class DetectionTrainingTests(unittest.TestCase):
 
     def test_kneelocation_preset_reuses_detection_settings_safely(self):
         config = _load_yaml(DEFAULT_CFG)
-        self.assertEqual(config["pretrained"], "yolo26l.pt")
+        self.assertEqual(config["pretrained"], "yolo26m.pt")
         self.assertEqual(config["optimizer"], "auto")
         self.assertEqual(config["epochs"], 500)
         self.assertEqual(config["patience"], 100)
@@ -55,6 +64,53 @@ class DetectionTrainingTests(unittest.TestCase):
         self.assertEqual(tuple(canonical.shape), (1, 2, 4))
         self.assertEqual(canonical[0, 0].tolist(), [1.0, 2.0, 10.0, 12.0])
         self.assertEqual(canonical[0, 1].tolist(), [4.0, 5.0, 14.0, 16.0])
+
+    def test_detection_report_trainer_has_stable_ddp_import(self):
+        from landmark.core.dist import generate_ddp_file
+
+        trainer = object.__new__(DetectionReportTrainer)
+        trainer.args = SimpleNamespace(model="model.yaml", augmentations=None)
+        trainer.hub_session = SimpleNamespace(model_url="model.yaml")
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch("landmark.core.dist.USER_CONFIG_DIR", Path(directory)),
+                patch.object(DetectionReportTrainer, "__module__", "__main__"),
+            ):
+                generated = Path(generate_ddp_file(trainer))
+                content = generated.read_text(encoding="utf-8")
+        self.assertIn("from landmark.train_det import DetectionReportTrainer", content)
+        self.assertNotIn("from __main__ import DetectionReportTrainer", content)
+
+    def test_ddp_parent_summary_uses_reloaded_best_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            save_dir = Path(directory)
+            (save_dir / "results.csv").write_text(
+                "epoch,metrics/mAP50-95(B)\n1,0.75\n", encoding="utf-8"
+            )
+            trainer = SimpleNamespace(
+                model="landmark/cfg/models/yolo26-detect.yaml",
+                validator=None,
+                metrics=None,
+                optimizer=None,
+                args=SimpleNamespace(
+                    imgsz=[32, 32], epochs=1, batch=4, seed=2026,
+                    optimizer="AdamW", lr0=0.001, auto_export_onnx=False,
+                ),
+                device=torch.device("cuda:0"),
+            )
+            trained_model = torch.nn.Conv2d(3, 2, kernel_size=1)
+            summary_path = write_detection_summary(
+                save_dir,
+                Path("yolo26-detect.yaml"),
+                {"class_instances": {"right_knee": 1, "left_knee": 1}},
+                trainer=trainer,
+                trained_model=trained_model,
+                validation_metrics={"metrics/mAP50-95(B)": 0.75},
+            )
+            summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["model"]["parameters"], 8)
+            self.assertEqual(summary["training"]["optimizer"], "AdamW")
+            self.assertEqual(summary["performance"]["best_checkpoint_validation"]["metrics/mAP50-95(B)"], 0.75)
 
     def test_detection_dataset_is_split_without_duplicate_leakage(self):
         with tempfile.TemporaryDirectory() as directory:
