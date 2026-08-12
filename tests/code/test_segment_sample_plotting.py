@@ -139,13 +139,13 @@ def generate_sample_output(output_dir: Path | None = None) -> Path:
         ranking_key="val/dice",
         maximize=True,
         filename="segment_dashboard.png",
-        model_name="RWKV_UNetV6-sample",
-        title="RWKV_UNetV6-sample | unet_meskoseg_9class",
+        model_name="RWKV_UNetV5-sample",
+        title="RWKV_UNetV5-sample | unet_meskoseg_9class",
         elapsed_seconds=36.0,
     )
 
     args = {
-        "model": "RWKV_UNetV6", "dataset_name": "unet_meskoseg_9class",
+        "model": "RWKV_UNetV5", "dataset_name": "unet_meskoseg_9class",
         "max_epochs": SAMPLE_EPOCHS, "img_size": 256, "input_channel": 3,
         "num_classes": 11, "batch_size": 8, "base_lr": 0.001,
         "pixel_spacing_mm": 0.1, "seed": SAMPLE_SEED, "auto_export_onnx": True,
@@ -207,6 +207,8 @@ def generate_sample_output(output_dir: Path | None = None) -> Path:
         },
         "artifacts": {
             "best_checkpoint": "weights/best.pt", "last_checkpoint": "weights/last.pt",
+            "best_checkpoint_type": "inference_best_without_optimizer",
+            "last_checkpoint_type": "resumable_with_optimizer",
             "metrics": "results.csv", "dashboard": "segment_dashboard.png",
             "metric_report": "segment_metrics.png",
             "samples": "samples/segment_sample_e{epoch}.png",
@@ -229,7 +231,7 @@ class SegmentationSampleOutputTests(unittest.TestCase):
         self.assertFalse((output_dir / "last.pt").exists())
         self.assertTrue((output_dir / "weights" / "best.pt").is_file())
         self.assertTrue((output_dir / "weights" / "last.pt").is_file())
-        self.assertTrue((output_dir / "weights" / "rwkv_unetv6.onnx").is_file())
+        self.assertTrue((output_dir / "weights" / "rwkv_unetv5.onnx").is_file())
         self.assertEqual(len(list((output_dir / "samples").glob("segment_sample_e*.png"))), SAMPLE_EPOCHS)
 
 

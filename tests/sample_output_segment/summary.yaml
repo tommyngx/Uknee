@@ -1,7 +1,7 @@
 schema_version: 2
 task: segmentation
 model:
-  name: RWKV_UNetV6
+  name: RWKV_UNetV5
   parameters: 2450000
   trainable_parameters: 2450000
   gflops: 12.84
@@ -90,15 +90,15 @@ deployment:
   auto_export_onnx: true
   onnx:
     status: ready
-    path: weights/rwkv_unetv6.onnx
+    path: weights/rwkv_unetv5.onnx
     format: onnx
     opset: 17
-    sha256: 0300848c4a50e84c9b4d16080bc7b2d7a0618f822a64e815623b0b2446d18608
+    sha256: b885b4ae2ab02bf899a367fd35200614eaed7a9cfaafadfeeed0c9eca51ebaf5
     file_size_bytes: 1584
     metadata:
       uknee.schema_version: '1'
       uknee.task: segmentation
-      uknee.model_name: RWKV_UNetV6
+      uknee.model_name: RWKV_UNetV5
       uknee.source_checkpoint: weights/best.pt
       uknee.opset: '17'
       uknee.preprocess: '{"schema_version":1,"source_spatial_shape":"dynamic","network_input_shape":[1,3,256,256],"image_size_hw":[256,256],"spatial_order":"height_width","onnx_dynamic_axes":{"batch":true,"height":false,"width":false},"layout":"NCHW","dtype":"float32","color_space":"RGB","value_range":[0.0,1.0],"normalization":{"mode":"scale_0_1","mean":[0.0,0.0,0.0],"std":[1.0,1.0,1.0]},"resize":{"mode":"letterbox","keep_aspect_ratio":true,"target_height":256,"target_width":256,"pad_value":0,"placement":"center","image_interpolation":"bilinear","mask_interpolation":"nearest"}}'
@@ -149,12 +149,19 @@ deployment:
         mask_interpolation: nearest
     parity:
       validated: true
+      validated_batches:
+      - 1
+      - 2
       provider: CPUExecutionProvider
       max_abs_diff: 0.0
       mean_abs_diff: 0.0
+      p99_abs_diff: 0.0
+      postprocess_agreement: 1.0
 artifacts:
   best_checkpoint: weights/best.pt
   last_checkpoint: weights/last.pt
+  best_checkpoint_type: inference_best_without_optimizer
+  last_checkpoint_type: resumable_with_optimizer
   metrics: results.csv
   dashboard: segment_dashboard.png
   metric_report: segment_metrics.png
@@ -169,4 +176,4 @@ artifacts:
   sample_display_height: 512
   sample_display_width: preserve_aspect_ratio
   sample_output_width: 800
-  onnx_model: weights/rwkv_unetv6.onnx
+  onnx_model: weights/rwkv_unetv5.onnx

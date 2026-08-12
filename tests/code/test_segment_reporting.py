@@ -28,7 +28,12 @@ from segment.utils.training_logs import (
     save_summary_yaml,
     save_training_args,
 )
-from segment.main import _export_best_segment_onnx, _should_export_pending_best
+from segment.main import (
+    _compact_existing_best_checkpoint,
+    _export_best_segment_onnx,
+    _save_checkpoint,
+    _should_export_pending_best,
+)
 
 
 RESULT_COLUMNS = [
@@ -38,6 +43,27 @@ RESULT_COLUMNS = [
 
 
 class SegmentReportingTests(unittest.TestCase):
+    def test_best_checkpoint_omits_optimizer_but_last_remains_resumable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            model = torch.nn.Conv2d(3, 2, 1)
+            optimizer = torch.optim.AdamW(model.parameters())
+            args = SimpleNamespace(img_size=[16, 16], input_channel=3)
+            _save_checkpoint(root / "last.pt", args, model, optimizer, 1, 0.5, include_optimizer=True)
+            _save_checkpoint(root / "best.pt", args, model, optimizer, 1, 0.5, include_optimizer=False)
+            last = torch.load(root / "last.pt", map_location="cpu", weights_only=False)
+            best = torch.load(root / "best.pt", map_location="cpu", weights_only=False)
+            self.assertEqual(last["checkpoint_type"], "resume")
+            self.assertIn("optimizer", last)
+            self.assertEqual(best["checkpoint_type"], "inference_best")
+            self.assertNotIn("optimizer", best)
+
+            best["optimizer"] = optimizer.state_dict()
+            torch.save(best, root / "best.pt")
+            self.assertTrue(_compact_existing_best_checkpoint(root / "best.pt"))
+            compacted = torch.load(root / "best.pt", map_location="cpu", weights_only=False)
+            self.assertNotIn("optimizer", compacted)
+
     def test_onnx_export_schedule_only_exports_pending_best(self):
         self.assertTrue(_should_export_pending_best(1, 200, 1, 0, 10))
         self.assertFalse(_should_export_pending_best(5, 200, 5, 1, 10))

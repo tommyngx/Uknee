@@ -16,7 +16,7 @@ from torch import nn
 from segment.utils.preprocessing import resolve_target_hw
 
 
-SUPPORTED_AUTO_EXPORT_MODELS = frozenset({"RWKV_UNetV3", "RWKV_UNetV6"})
+SUPPORTED_AUTO_EXPORT_MODELS = frozenset({"RWKV_UNetV3", "RWKV_UNetV5", "RWKV_UNetV6"})
 ONNX_OPSET = 17
 
 

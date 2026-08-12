@@ -8,7 +8,7 @@
 
 | Hạng mục | Quyết định | Trạng thái |
 |---|---|---|
-| Segment model | Chỉ tập trung `RWKV_UNetV3` và `RWKV_UNetV6` | Đã áp dụng |
+| Segment model | Tập trung `RWKV_UNetV3`, `RWKV_UNetV5` gọn và `RWKV_UNetV6` full | Đã áp dụng |
 | Landmark model | Tự export ONNX cho YOLO trong `landmark` | Đã áp dụng |
 | Input color | Model-facing tensor dùng RGB, float32 | Đã áp dụng |
 | Kích thước ảnh nguồn | Chấp nhận mọi tỉ lệ/kích thước, letterbox giữ aspect ratio | Đã áp dụng |
@@ -43,7 +43,7 @@ runs/segment/<experiment>/
     └── segment_sample_e{epoch}.png
 ```
 
-Ví dụ train `RWKV_UNetV6`, artifact tương ứng là `rwkv_unetv6.onnx`.
+Ví dụ train `RWKV_UNetV5`/`RWKV_UNetV6`, artifact tương ứng là `rwkv_unetv5.onnx`/`rwkv_unetv6.onnx`.
 
 ### Landmark2 / YOLO
 
@@ -164,7 +164,7 @@ Auto-export hiện chỉ chạy với:
 
 ```text
 RWKV_UNetV3
-RWKV_UNetV6
+RWKV_UNetV5 hoặc RWKV_UNetV6
 ```
 
 Model khác vẫn train/save checkpoint bình thường nhưng `deployment.onnx.status` là `not_supported`.
@@ -282,7 +282,7 @@ Các mục trên có thể xem lại khi dữ liệu lớn hơn hoặc bước v
 - [x] Ảnh không vuông được letterbox, không kéo giãn.
 - [x] Segment prediction được đưa về kích thước ảnh nguồn.
 - [x] Multiclass mask giữ raw class IDs.
-- [x] `RWKV_UNetV6` có trong registry và model metadata.
+- [x] `RWKV_UNetV5` gọn và `RWKV_UNetV6` full có trong registry và model metadata.
 - [x] RWKV V3 export ONNX và chạy ONNX Runtime.
 - [x] RWKV V6 export ONNX và chạy ONNX Runtime.
 - [x] YOLO pose export ONNX, metadata đọc được và output shapes đúng.

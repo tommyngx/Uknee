@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 from segment.dataloader.augment import build_train_transform, build_val_transform
 from segment.dataloader.image_io import read_rgb_image
 from segment.deploy.app_function import predict_mask
+from segment.models import MODEL_REGISTRY, load_model_id
 from segment.utils.onnx_export import (
     _parity_statistics,
     _validate_parity_statistics,
@@ -62,6 +63,20 @@ class _TraceMutatingSegment(torch.nn.Module):
 
 
 class SegmentONNXAndPreprocessingTests(unittest.TestCase):
+    def test_rwkv_v5_compact_and_v6_full_registry_names(self):
+        self.assertEqual(
+            MODEL_REGISTRY["RWKV_UNetV5"],
+            (".RWKV.RWKV_UNet.RWKV_UNetV5", "med_axial_rwkv5_unet"),
+        )
+        self.assertEqual(
+            MODEL_REGISTRY["RWKV_UNetV6"],
+            (".RWKV.RWKV_UNet.RWKV_UNetV6", "rwkv_unet_v6"),
+        )
+        self.assertEqual(load_model_id("RWKV_UNetV5")[0], 124)
+        self.assertEqual(load_model_id("RWKV_UNetV6")[0], 125)
+        self.assertEqual(onnx_filename("RWKV_UNetV5"), "rwkv_unetv5.onnx")
+        self.assertEqual(onnx_filename("RWKV_UNetV6"), "rwkv_unetv6.onnx")
+
     def test_parity_accepts_small_backend_drift_but_rejects_changed_masks(self):
         expected = np.zeros((1, 3, 16, 16), dtype=np.float32)
         expected[:, 0] = 1.0

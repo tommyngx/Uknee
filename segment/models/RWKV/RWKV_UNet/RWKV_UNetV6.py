@@ -1,344 +1,34 @@
 
 import math
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from timm.layers import DropPath
 
 
-# ============================================================
-# Utility layers
-# ============================================================
-
-
-class DropPath(nn.Module):
-    """Stochastic depth applied per sample."""
-
-    def __init__(self, drop_prob: float = 0.0) -> None:
-        super().__init__()
-        self.drop_prob = float(drop_prob)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.drop_prob == 0.0 or not self.training:
-            return x
-
-        keep_prob = 1.0 - self.drop_prob
-        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-
-        random_tensor = keep_prob + torch.rand(
-            shape,
-            dtype=x.dtype,
-            device=x.device,
-        )
-
-        random_tensor.floor_()
-        return x.div(keep_prob) * random_tensor
-
-
-
-def _valid_group_count(channels: int, preferred_groups: int = 8) -> int:
-    groups = min(preferred_groups, channels)
-    while channels % groups != 0 and groups > 1:
-        groups -= 1
-    return groups
-
-
-class ConvGNAct(nn.Module):
-    def __init__(
-        self,
-        dim_in: int,
-        dim_out: int,
-        kernel_size: int = 3,
-        stride: int = 1,
-        groups: int = 1,
-        activation: bool = True,
-    ) -> None:
-        super().__init__()
-
-        padding = kernel_size // 2
-
-        self.conv = nn.Conv2d(
-            dim_in,
-            dim_out,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            groups=groups,
-            bias=False,
-        )
-
-        self.norm = nn.GroupNorm(
-            num_groups=_valid_group_count(dim_out),
-            num_channels=dim_out,
-        )
-
-        self.act = nn.SiLU(inplace=True) if activation else nn.Identity()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.act(self.norm(self.conv(x)))
-
-
-class LayerScale(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        init_value: float = 1e-4,
-    ) -> None:
-        super().__init__()
-        self.gamma = nn.Parameter(
-            torch.full((dim,), init_value)
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * self.gamma.view(1, 1, -1)
-
-
-# ============================================================
-# Lightweight local encoder blocks
-# ============================================================
-
-def q_shift_2d(
-    tokens: torch.Tensor,
-    patch_resolution: Tuple[int, int],
-    shift_pixel: int = 1,
-    gamma: float = 0.25,
-) -> torch.Tensor:
-    if gamma > 0.25:
-        raise ValueError("gamma must be <= 0.25")
-
-    batch_size, token_count, channels = tokens.shape
-    height, width = patch_resolution
-
-    if token_count != height * width:
-        raise ValueError(
-            f"Token count {token_count} does not match "
-            f"resolution {height}x{width}"
-        )
-
-    feature = tokens.transpose(1, 2).reshape(
-        batch_size,
-        channels,
-        height,
-        width,
-    )
-
-    output = torch.zeros_like(feature)
-
-    c1 = int(channels * gamma)
-    c2 = int(channels * gamma * 2)
-    c3 = int(channels * gamma * 3)
-    c4 = int(channels * gamma * 4)
-
-    if shift_pixel >= width or shift_pixel >= height:
-        return tokens
-
-    output[:, 0:c1, :, shift_pixel:] = feature[:, 0:c1, :, :-shift_pixel]
-    output[:, c1:c2, :, :-shift_pixel] = feature[:, c1:c2, :, shift_pixel:]
-    output[:, c2:c3, shift_pixel:, :] = feature[:, c2:c3, :-shift_pixel, :]
-    output[:, c3:c4, :-shift_pixel, :] = feature[:, c3:c4, shift_pixel:, :]
-    output[:, c4:, :, :] = feature[:, c4:, :, :]
-
-    return output.flatten(2).transpose(1, 2)
-
-
-class LightweightDynamicShift(nn.Module):
+class DynamicLerpV6(nn.Module):
     """
-    Lightweight local RWKV-inspired shift module for Stage 3.
+    Input-dependent interpolation for RWKV-6-inspired branches.
 
-    It is intentionally non-recurrent:
-    - bounded dynamic value mixing
-    - static key/receptance/gate mixing
-    - local directional Q-shift
+    Produces separately mixed representations for:
+        r: receptance
+        w: decay
+        k: key
+        v: value
+        g: output gate
     """
 
     def __init__(
         self,
         dim: int,
-        low_rank_dim: int = 16,
-        shift_pixel: int = 1,
+        low_rank_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
 
         self.dim = dim
-        self.shift_pixel = shift_pixel
-
-        self.mix_k = nn.Parameter(torch.full((1, 1, dim), 0.5))
-        self.mix_r = nn.Parameter(torch.full((1, 1, dim), 0.5))
-        self.mix_g = nn.Parameter(torch.full((1, 1, dim), 0.5))
-        self.mix_v = nn.Parameter(torch.full((1, 1, dim), 0.5))
-
-        self.value_down = nn.Linear(dim, low_rank_dim, bias=False)
-        self.value_up = nn.Linear(low_rank_dim, dim, bias=False)
-
-        self.key = nn.Linear(dim, dim, bias=False)
-        self.value = nn.Linear(dim, dim, bias=False)
-        self.receptance = nn.Linear(dim, dim, bias=False)
-        self.gate = nn.Linear(dim, dim, bias=False)
-        self.output = nn.Linear(dim, dim, bias=False)
-
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        nn.init.normal_(self.value_down.weight, std=0.01)
-        nn.init.zeros_(self.value_up.weight)
-
-        for layer in [
-            self.key,
-            self.value,
-            self.receptance,
-            self.gate,
-        ]:
-            nn.init.trunc_normal_(layer.weight, std=0.02)
-
-        nn.init.trunc_normal_(self.output.weight, std=0.01)
-
-    def forward(
-        self,
-        tokens: torch.Tensor,
-        patch_resolution: Tuple[int, int],
-    ) -> torch.Tensor:
-        shifted = q_shift_2d(
-            tokens,
-            patch_resolution=patch_resolution,
-            shift_pixel=self.shift_pixel,
-        )
-        delta = shifted - tokens
-
-        dynamic_v = torch.tanh(self.value_down(tokens))
-        dynamic_v = self.value_up(dynamic_v)
-
-        mix_k = torch.sigmoid(self.mix_k)
-        mix_r = torch.sigmoid(self.mix_r)
-        mix_g = torch.sigmoid(self.mix_g)
-        mix_v = torch.sigmoid(self.mix_v + dynamic_v)
-
-        xk = tokens + delta * mix_k
-        xr = tokens + delta * mix_r
-        xg = tokens + delta * mix_g
-        xv = tokens + delta * mix_v
-
-        k = self.key(xk)
-        v = self.value(xv)
-        r = torch.sigmoid(self.receptance(xr))
-        g = F.silu(self.gate(xg))
-
-        return self.output(r * (k + v) * g)
-
-
-class LocalIRBlock(nn.Module):
-    def __init__(
-        self,
-        dim_in: int,
-        dim_out: int,
-        exp_ratio: float = 2.0,
-        stride: int = 1,
-        kernel_size: int = 5,
-        drop_path: float = 0.0,
-        use_dynamic_shift: bool = False,
-        layer_scale_init: float = 1e-4,
-    ) -> None:
-        super().__init__()
-
-        dim_mid = int(dim_in * exp_ratio)
-
-        self.use_residual = stride == 1 and dim_in == dim_out
-        self.use_dynamic_shift = use_dynamic_shift
-
-        self.expand = ConvGNAct(
-            dim_in,
-            dim_mid,
-            kernel_size=1,
-        )
-
-        self.local = ConvGNAct(
-            dim_mid,
-            dim_mid,
-            kernel_size=kernel_size,
-            stride=stride,
-            groups=dim_mid,
-        )
-
-        if use_dynamic_shift:
-            self.token_norm = nn.LayerNorm(dim_mid)
-            self.dynamic_shift = LightweightDynamicShift(
-                dim=dim_mid,
-                low_rank_dim=min(16, max(8, dim_mid // 32)),
-            )
-            self.shift_scale = LayerScale(
-                dim=dim_mid,
-                init_value=layer_scale_init,
-            )
-
-        self.project = ConvGNAct(
-            dim_mid,
-            dim_out,
-            kernel_size=1,
-            activation=False,
-        )
-
-        self.drop_path = (
-            DropPath(drop_path)
-            if drop_path > 0
-            else nn.Identity()
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        shortcut = x
-
-        x = self.expand(x)
-        x = self.local(x)
-
-        if self.use_dynamic_shift:
-            batch_size, channels, height, width = x.shape
-            tokens = x.flatten(2).transpose(1, 2)
-
-            shifted = self.dynamic_shift(
-                self.token_norm(tokens),
-                patch_resolution=(height, width),
-            )
-
-            tokens = tokens + self.drop_path(
-                self.shift_scale(shifted)
-            )
-
-            x = tokens.transpose(1, 2).reshape(
-                batch_size,
-                channels,
-                height,
-                width,
-            )
-
-        x = self.project(x)
-
-        if self.use_residual:
-            x = shortcut + self.drop_path(x)
-
-        return x
-
-
-# ============================================================
-# Optimized RWKV-6-inspired matrix-state bottleneck
-# ============================================================
-
-class PartialDynamicLerpV6(nn.Module):
-    """
-    Reduced-complexity dynamic mixing.
-
-    Dynamic branches:
-        w: recurrence decay
-        v: value/content
-
-    Static learned branches:
-        r, k, g
-    """
-
-    def __init__(
-        self,
-        dim: int,
-        low_rank_dim: int = 32,
-    ) -> None:
-        super().__init__()
+        self.low_rank_dim = low_rank_dim or max(32, dim // 8)
 
         self.mix_r = nn.Parameter(torch.full((1, 1, dim), 0.5))
         self.mix_w = nn.Parameter(torch.full((1, 1, dim), 0.5))
@@ -346,30 +36,31 @@ class PartialDynamicLerpV6(nn.Module):
         self.mix_v = nn.Parameter(torch.full((1, 1, dim), 0.5))
         self.mix_g = nn.Parameter(torch.full((1, 1, dim), 0.5))
 
-        self.dynamic_down = nn.Linear(
+        self.maa_down = nn.Linear(
             dim,
-            low_rank_dim * 2,
+            self.low_rank_dim * 5,
             bias=False,
         )
 
-        self.dynamic_w = nn.Linear(
-            low_rank_dim,
-            dim,
-            bias=False,
-        )
-
-        self.dynamic_v = nn.Linear(
-            low_rank_dim,
-            dim,
-            bias=False,
-        )
+        self.maa_r = nn.Linear(self.low_rank_dim, dim, bias=False)
+        self.maa_w = nn.Linear(self.low_rank_dim, dim, bias=False)
+        self.maa_k = nn.Linear(self.low_rank_dim, dim, bias=False)
+        self.maa_v = nn.Linear(self.low_rank_dim, dim, bias=False)
+        self.maa_g = nn.Linear(self.low_rank_dim, dim, bias=False)
 
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        nn.init.normal_(self.dynamic_down.weight, std=0.01)
-        nn.init.zeros_(self.dynamic_w.weight)
-        nn.init.zeros_(self.dynamic_v.weight)
+        nn.init.normal_(self.maa_down.weight, std=0.01)
+
+        for layer in [
+            self.maa_r,
+            self.maa_w,
+            self.maa_k,
+            self.maa_v,
+            self.maa_g,
+        ]:
+            nn.init.zeros_(layer.weight)
 
     def forward(
         self,
@@ -384,43 +75,39 @@ class PartialDynamicLerpV6(nn.Module):
     ]:
         delta = shifted_x - x
 
-        dynamic = torch.tanh(self.dynamic_down(x))
-        dynamic_w, dynamic_v = dynamic.chunk(2, dim=-1)
+        dynamic = torch.tanh(self.maa_down(x))
+        dr, dw, dk, dv, dg = dynamic.chunk(5, dim=-1)
 
-        mix_r = torch.sigmoid(self.mix_r)
-        mix_k = torch.sigmoid(self.mix_k)
-        mix_g = torch.sigmoid(self.mix_g)
+        lerp_r = torch.sigmoid(self.mix_r + self.maa_r(dr))
+        lerp_w = torch.sigmoid(self.mix_w + self.maa_w(dw))
+        lerp_k = torch.sigmoid(self.mix_k + self.maa_k(dk))
+        lerp_v = torch.sigmoid(self.mix_v + self.maa_v(dv))
+        lerp_g = torch.sigmoid(self.mix_g + self.maa_g(dg))
 
-        mix_w = torch.sigmoid(
-            self.mix_w + self.dynamic_w(dynamic_w)
-        )
-
-        mix_v = torch.sigmoid(
-            self.mix_v + self.dynamic_v(dynamic_v)
-        )
-
-        xr = x + delta * mix_r
-        xw = x + delta * mix_w
-        xk = x + delta * mix_k
-        xv = x + delta * mix_v
-        xg = x + delta * mix_g
+        xr = x + delta * lerp_r
+        xw = x + delta * lerp_w
+        xk = x + delta * lerp_k
+        xv = x + delta * lerp_v
+        xg = x + delta * lerp_g
 
         return xr, xw, xk, xv, xg
 
 
-class MatrixStateScan(nn.Module):
+class RWKV6MatrixStateScan(nn.Module):
     """
-    Plain PyTorch multi-head matrix-state recurrent scan.
+    Plain PyTorch reference implementation of a recurrent,
+    multi-head, matrix-valued RWKV-6-inspired state scan.
 
-    The recurrent state is kept in float32 for stability.
+    This implementation prioritizes clarity and correctness.
+    It is slower than a fused CUDA or Triton kernel because it
+    uses a Python loop over sequence length.
     """
 
     def __init__(
         self,
         dim: int,
-        num_heads: int = 8,
+        num_heads: int = 4,
         state_dtype: torch.dtype = torch.float32,
-        state_scale: Optional[float] = None,
     ) -> None:
         super().__init__()
 
@@ -434,20 +121,20 @@ class MatrixStateScan(nn.Module):
         self.head_dim = dim // num_heads
         self.state_dtype = state_dtype
 
-        self.state_scale = (
-            state_scale
-            if state_scale is not None
-            else self.head_dim ** -0.5
-        )
-
     def forward(
         self,
         r: torch.Tensor,
         decay: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        reverse: bool = False,
     ) -> torch.Tensor:
         batch_size, length, channels = r.shape
+
+        if channels != self.dim:
+            raise ValueError(
+                f"Expected {self.dim} channels, received {channels}"
+            )
 
         heads = self.num_heads
         head_dim = self.head_dim
@@ -456,6 +143,12 @@ class MatrixStateScan(nn.Module):
         decay = decay.view(batch_size, length, heads, head_dim)
         k = k.view(batch_size, length, heads, head_dim)
         v = v.view(batch_size, length, heads, head_dim)
+
+        if reverse:
+            r = torch.flip(r, dims=[1])
+            decay = torch.flip(decay, dims=[1])
+            k = torch.flip(k, dims=[1])
+            v = torch.flip(v, dims=[1])
 
         state = torch.zeros(
             batch_size,
@@ -474,16 +167,8 @@ class MatrixStateScan(nn.Module):
             k_t = k[:, index].to(self.state_dtype)
             v_t = v[:, index].to(self.state_dtype)
 
-            kv_t = (
-                k_t.unsqueeze(-1)
-                * v_t.unsqueeze(-2)
-                * self.state_scale
-            )
-
-            state = (
-                state * decay_t.unsqueeze(-1)
-                + kv_t
-            )
+            kv_t = k_t.unsqueeze(-1) * v_t.unsqueeze(-2)
+            state = state * decay_t.unsqueeze(-1) + kv_t
 
             y_t = torch.einsum(
                 "bhd,bhde->bhe",
@@ -493,29 +178,43 @@ class MatrixStateScan(nn.Module):
 
             outputs.append(y_t.to(r.dtype))
 
-        return torch.stack(outputs, dim=1).reshape(
-            batch_size,
-            length,
-            channels,
-        )
+        output = torch.stack(outputs, dim=1)
+
+        if reverse:
+            output = torch.flip(output, dims=[1])
+
+        return output.reshape(batch_size, length, channels)
 
 
-class UniRWKV6SequenceMix(nn.Module):
+class RWKV6SequenceMix(nn.Module):
     """
-    Unidirectional RWKV-6-inspired matrix-state sequence mixer.
+    RWKV-6-inspired sequence mixer with:
 
-    Reverse direction is handled outside this module by flipping the sequence.
+    - dynamic LERP
+    - data-dependent decay
+    - multi-head matrix-valued recurrent state
+    - forward and backward recurrence
+    - receptance
+    - output gate
     """
 
     def __init__(
         self,
         dim: int,
-        num_heads: int = 8,
-        low_rank_dim: int = 32,
+        num_heads: int = 4,
+        low_rank_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
 
-        self.dynamic_lerp = PartialDynamicLerpV6(
+        if dim % num_heads != 0:
+            raise ValueError(
+                f"dim={dim} must be divisible by num_heads={num_heads}"
+            )
+
+        self.dim = dim
+        self.num_heads = num_heads
+
+        self.dynamic_lerp = DynamicLerpV6(
             dim=dim,
             low_rank_dim=low_rank_dim,
         )
@@ -526,18 +225,26 @@ class UniRWKV6SequenceMix(nn.Module):
         self.value = nn.Linear(dim, dim, bias=False)
         self.gate = nn.Linear(dim, dim, bias=False)
 
-        self.scan = MatrixStateScan(
+        self.forward_scan = RWKV6MatrixStateScan(
+            dim=dim,
+            num_heads=num_heads,
+        )
+        self.backward_scan = RWKV6MatrixStateScan(
             dim=dim,
             num_heads=num_heads,
         )
 
-        self.norm = nn.GroupNorm(
+        self.output_norm = nn.GroupNorm(
             num_groups=num_heads,
             num_channels=dim,
             eps=1e-5,
         )
 
         self.output = nn.Linear(dim, dim, bias=False)
+
+        self.direction_fusion = nn.Parameter(
+            torch.tensor([0.5, 0.5], dtype=torch.float32)
+        )
 
         self.reset_parameters()
 
@@ -552,9 +259,7 @@ class UniRWKV6SequenceMix(nn.Module):
 
         nn.init.zeros_(self.decay.weight)
         nn.init.constant_(self.decay.bias, -2.0)
-
-        # Important: inner projection must be non-zero.
-        nn.init.trunc_normal_(self.output.weight, std=0.01)
+        nn.init.zeros_(self.output.weight)
 
     @staticmethod
     def shift_sequence(x: torch.Tensor) -> torch.Tensor:
@@ -579,75 +284,87 @@ class UniRWKV6SequenceMix(nn.Module):
             -F.softplus(self.decay(xw))
         )
 
-        output = self.scan(
+        forward_output = self.forward_scan(
             r=r,
             decay=decay,
             k=k,
             v=v,
+            reverse=False,
         )
 
-        output = self.norm(
+        backward_output = self.backward_scan(
+            r=r,
+            decay=decay,
+            k=k,
+            v=v,
+            reverse=True,
+        )
+
+        weights = torch.softmax(
+            self.direction_fusion,
+            dim=0,
+        )
+
+        output = (
+            weights[0] * forward_output
+            + weights[1] * backward_output
+        )
+
+        output = self.output_norm(
             output.transpose(1, 2)
         ).transpose(1, 2)
 
         output = output * g
-        return self.output(output)
+        output = self.output(output)
+
+        return output
 
 
-class QuadAxialMatrixRWKV(nn.Module):
+class AxialRWKV6SpatialMix(nn.Module):
     """
-    Lightweight four-direction axial matrix-state mixer.
+    2D RWKV-6-inspired spatial mixer.
 
-    Directions:
-        left  -> right
-        right -> left
-        top   -> bottom
-        bottom-> top
+    Horizontal path:
+        each row is treated as a sequence.
 
-    Reverse directions share weights with the matching forward axis.
-    Direction fusion uses only four learned scalar logits.
+    Vertical path:
+        each column is treated as a sequence.
+
+    Both paths are internally bidirectional.
     """
 
     def __init__(
         self,
         dim: int,
-        num_heads: int = 8,
-        low_rank_dim: int = 32,
+        num_heads: int = 4,
+        low_rank_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
 
-        self.horizontal = UniRWKV6SequenceMix(
+        self.dim = dim
+
+        self.horizontal_mix = RWKV6SequenceMix(
             dim=dim,
             num_heads=num_heads,
             low_rank_dim=low_rank_dim,
         )
 
-        self.vertical = UniRWKV6SequenceMix(
+        self.vertical_mix = RWKV6SequenceMix(
             dim=dim,
             num_heads=num_heads,
             low_rank_dim=low_rank_dim,
         )
 
-        self.direction_logits = nn.Parameter(
-            torch.zeros(4)
+        hidden_gate_dim = max(16, dim // 4)
+
+        self.axis_gate = nn.Sequential(
+            nn.Linear(dim, hidden_gate_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_gate_dim, 2),
         )
 
         self.output = nn.Linear(dim, dim, bias=False)
-
-        # Outer residual projection starts at zero.
         nn.init.zeros_(self.output.weight)
-
-    @staticmethod
-    def _reverse_scan(
-        mixer: nn.Module,
-        sequence: torch.Tensor,
-    ) -> torch.Tensor:
-        reversed_sequence = torch.flip(
-            sequence,
-            dims=[1],
-        )
-        output = mixer(reversed_sequence)
-        return torch.flip(output, dims=[1])
 
     def forward(
         self,
@@ -670,55 +387,29 @@ class QuadAxialMatrixRWKV(nn.Module):
             channels,
         )
 
-        # Horizontal sequences: [B*H, W, C]
-        horizontal_sequence = feature.reshape(
+        horizontal = feature.reshape(
             batch_size * height,
             width,
             channels,
         )
-
-        left_to_right = self.horizontal(
-            horizontal_sequence
-        )
-
-        right_to_left = self._reverse_scan(
-            self.horizontal,
-            horizontal_sequence,
-        )
-
-        left_to_right = left_to_right.view(
+        horizontal = self.horizontal_mix(horizontal)
+        horizontal = horizontal.view(
             batch_size,
             height,
             width,
             channels,
         )
 
-        right_to_left = right_to_left.view(
-            batch_size,
-            height,
-            width,
-            channels,
-        )
-
-        # Vertical sequences: [B*W, H, C]
-        vertical_sequence = feature.permute(
+        vertical = feature.permute(
             0, 2, 1, 3
-        ).contiguous().view(
+        ).contiguous()
+        vertical = vertical.view(
             batch_size * width,
             height,
             channels,
         )
-
-        top_to_bottom = self.vertical(
-            vertical_sequence
-        )
-
-        bottom_to_top = self._reverse_scan(
-            self.vertical,
-            vertical_sequence,
-        )
-
-        top_to_bottom = top_to_bottom.view(
+        vertical = self.vertical_mix(vertical)
+        vertical = vertical.view(
             batch_size,
             width,
             height,
@@ -727,25 +418,22 @@ class QuadAxialMatrixRWKV(nn.Module):
             0, 2, 1, 3
         ).contiguous()
 
-        bottom_to_top = bottom_to_top.view(
-            batch_size,
-            width,
-            height,
-            channels,
-        ).permute(
-            0, 2, 1, 3
-        ).contiguous()
+        pooled = feature.mean(dim=(1, 2))
+        axis_weights = torch.softmax(
+            self.axis_gate(pooled),
+            dim=-1,
+        )
 
-        weights = torch.softmax(
-            self.direction_logits,
-            dim=0,
+        horizontal_weight = axis_weights[:, 0].view(
+            batch_size, 1, 1, 1
+        )
+        vertical_weight = axis_weights[:, 1].view(
+            batch_size, 1, 1, 1
         )
 
         output = (
-            weights[0] * left_to_right
-            + weights[1] * right_to_left
-            + weights[2] * top_to_bottom
-            + weights[3] * bottom_to_top
+            horizontal_weight * horizontal
+            + vertical_weight * vertical
         )
 
         output = output.reshape(
@@ -757,91 +445,131 @@ class QuadAxialMatrixRWKV(nn.Module):
         return self.output(output)
 
 
-class LightweightChannelMix(nn.Module):
+class RWKV6ChannelMix(nn.Module):
+    """
+    RWKV-style gated channel mixer.
+    """
+
     def __init__(
         self,
         dim: int,
-        hidden_ratio: float = 2.0,
-        dropout: float = 0.05,
+        hidden_ratio: float = 3.5,
     ) -> None:
         super().__init__()
 
         hidden_dim = int(dim * hidden_ratio)
 
-        self.fc1 = nn.Linear(
-            dim,
-            hidden_dim * 2,
-            bias=False,
+        self.mix_k = nn.Parameter(
+            torch.full((1, 1, dim), 0.5)
+        )
+        self.mix_r = nn.Parameter(
+            torch.full((1, 1, dim), 0.5)
         )
 
-        self.dropout = nn.Dropout(dropout)
+        self.key = nn.Linear(dim, hidden_dim, bias=False)
+        self.value = nn.Linear(hidden_dim, dim, bias=False)
+        self.receptance = nn.Linear(dim, dim, bias=False)
 
-        self.fc2 = nn.Linear(
-            hidden_dim,
-            dim,
-            bias=False,
-        )
+        nn.init.trunc_normal_(self.key.weight, std=0.02)
+        nn.init.zeros_(self.value.weight)
+        nn.init.trunc_normal_(self.receptance.weight, std=0.02)
 
-        nn.init.trunc_normal_(self.fc1.weight, std=0.02)
-        nn.init.zeros_(self.fc2.weight)
+    @staticmethod
+    def shift_sequence(x: torch.Tensor) -> torch.Tensor:
+        shifted = torch.zeros_like(x)
+        shifted[:, 1:] = x[:, :-1]
+        return shifted
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        value, gate = self.fc1(x).chunk(2, dim=-1)
-        x = value * F.silu(gate)
-        x = self.dropout(x)
-        return self.fc2(x)
+        shifted_x = self.shift_sequence(x)
+
+        xk = x + (shifted_x - x) * torch.sigmoid(self.mix_k)
+        xr = x + (shifted_x - x) * torch.sigmoid(self.mix_r)
+
+        k = torch.relu(self.key(xk)).square()
+        v = self.value(k)
+
+        r = torch.sigmoid(self.receptance(xr))
+
+        return r * v
 
 
-class MatrixRWKVBottleneckBlock(nn.Module):
+class IRRWKV6Block(nn.Module):
     """
-    Paper-oriented bottleneck block.
-
-    - Quad-axial shared-weight matrix-state recurrence
-    - partial dynamic LERP (w and v only)
-    - LayerScale
-    - lightweight channel mix
-    - GroupNorm-compatible small-batch design
+    Inverted-residual RWKV-6-inspired block for 2D medical images.
     """
 
     def __init__(
         self,
-        dim: int,
-        num_heads: int = 8,
-        low_rank_dim: int = 32,
-        channel_ratio: float = 2.0,
-        drop_path: float = 0.05,
-        layer_scale_init: float = 1e-4,
+        dim_in: int,
+        dim_out: int,
+        exp_ratio: float = 2.0,
+        stride: int = 1,
+        num_heads: int = 4,
+        drop_path: float = 0.0,
+        use_spatial_mix: bool = True,
+        local_kernel_size: int = 5,
     ) -> None:
         super().__init__()
 
-        if dim % num_heads != 0:
-            raise ValueError(
-                f"dim={dim} must be divisible by num_heads={num_heads}"
+        dim_mid = int(dim_in * exp_ratio)
+        dim_mid = math.ceil(dim_mid / num_heads) * num_heads
+
+        self.dim_in = dim_in
+        self.dim_out = dim_out
+        self.dim_mid = dim_mid
+        self.stride = stride
+        self.use_spatial_mix = use_spatial_mix
+
+        self.input_norm = nn.BatchNorm2d(dim_in)
+
+        self.expand = nn.Sequential(
+            nn.Conv2d(
+                dim_in,
+                dim_mid,
+                kernel_size=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(dim_mid),
+            nn.SiLU(inplace=True),
+        )
+
+        self.local_conv = nn.Sequential(
+            nn.Conv2d(
+                dim_mid,
+                dim_mid,
+                kernel_size=local_kernel_size,
+                stride=stride,
+                padding=local_kernel_size // 2,
+                groups=dim_mid,
+                bias=False,
+            ),
+            nn.BatchNorm2d(dim_mid),
+            nn.SiLU(inplace=True),
+        )
+
+        self.spatial_norm = nn.LayerNorm(dim_mid) if use_spatial_mix else nn.Identity()
+        self.channel_norm = nn.LayerNorm(dim_mid)
+
+        if use_spatial_mix:
+            self.spatial_mix = AxialRWKV6SpatialMix(
+                dim=dim_mid,
+                num_heads=num_heads,
             )
 
-        self.spatial_norm = nn.LayerNorm(dim)
-        self.channel_norm = nn.LayerNorm(dim)
-
-        self.spatial_mix = QuadAxialMatrixRWKV(
-            dim=dim,
-            num_heads=num_heads,
-            low_rank_dim=low_rank_dim,
+        self.channel_mix = RWKV6ChannelMix(
+            dim=dim_mid,
+            hidden_ratio=3.5,
         )
 
-        self.channel_mix = LightweightChannelMix(
-            dim=dim,
-            hidden_ratio=channel_ratio,
-            dropout=0.05,
-        )
-
-        self.spatial_scale = LayerScale(
-            dim=dim,
-            init_value=layer_scale_init,
-        )
-
-        self.channel_scale = LayerScale(
-            dim=dim,
-            init_value=layer_scale_init,
+        self.project = nn.Sequential(
+            nn.Conv2d(
+                dim_mid,
+                dim_out,
+                kernel_size=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(dim_out),
         )
 
         self.drop_path = (
@@ -850,105 +578,140 @@ class MatrixRWKVBottleneckBlock(nn.Module):
             else nn.Identity()
         )
 
-    def forward(
-        self,
-        x: torch.Tensor,
-    ) -> torch.Tensor:
+        self.use_residual = (
+            stride == 1 and dim_in == dim_out
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shortcut = x
+
+        x = self.input_norm(x)
+        x = self.expand(x)
+        x = self.local_conv(x)
+
         batch_size, channels, height, width = x.shape
 
         tokens = x.flatten(2).transpose(1, 2)
 
-        tokens = tokens + self.drop_path(
-            self.spatial_scale(
+        if self.use_spatial_mix:
+            tokens = tokens + self.drop_path(
                 self.spatial_mix(
                     self.spatial_norm(tokens),
                     patch_resolution=(height, width),
                 )
             )
-        )
 
         tokens = tokens + self.drop_path(
-            self.channel_scale(
-                self.channel_mix(
-                    self.channel_norm(tokens)
-                )
+            self.channel_mix(
+                self.channel_norm(tokens)
             )
         )
 
-        return tokens.transpose(1, 2).reshape(
+        x = tokens.transpose(1, 2).reshape(
             batch_size,
             channels,
             height,
             width,
         )
 
+        x = self.project(x)
 
-# ============================================================
-# Encoder and decoder
-# ============================================================
+        if self.use_residual:
+            x = shortcut + self.drop_path(x)
 
-class MedRWKV6Encoder(nn.Module):
+        return x
+
+
+class RWKV6UNetEncoder(nn.Module):
     def __init__(
         self,
-        input_channels: int = 1,
+        input_channels: int = 3,
         stem_dim: int = 24,
-        depths: Tuple[int, int, int, int] = (2, 2, 3, 2),
-        embed_dims: Tuple[int, int, int, int] = (48, 72, 128, 192),
-        exp_ratios: Tuple[float, float, float, float] = (2.0, 2.0, 2.5, 2.0),
-        drop_path_rate: float = 0.05,
-        bottleneck_heads: int = 8,
-        bottleneck_low_rank: int = 32,
+        depths: Tuple[int, ...] = (2, 2, 4, 2),
+        embed_dims: Tuple[int, ...] = (48, 72, 144, 240),
+        exp_ratios: Tuple[float, ...] = (2.0, 2.5, 3.0, 3.0),
+        num_heads: Tuple[int, ...] = (1, 1, 4, 6),
+        drop_path_rate: float = 0.1,
     ) -> None:
         super().__init__()
 
-        self.stem = ConvGNAct(
-            input_channels,
-            stem_dim,
-            kernel_size=3,
-            stride=1,
+        if not (
+            len(depths)
+            == len(embed_dims)
+            == len(exp_ratios)
+            == len(num_heads)
+            == 4
+        ):
+            raise ValueError(
+                "depths, embed_dims, exp_ratios, and num_heads "
+                "must all contain exactly four values"
+            )
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(
+                input_channels,
+                stem_dim,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(stem_dim),
+            nn.SiLU(inplace=True),
         )
 
-        total_local_blocks = sum(depths)
+        total_blocks = sum(depths)
         drop_rates = torch.linspace(
             0,
             drop_path_rate,
-            total_local_blocks + 1,
+            total_blocks,
         ).tolist()
 
         stages = []
         input_dim = stem_dim
-        drop_index = 0
+        block_index = 0
 
-        for stage_index in range(4):
+        for stage_index, (
+            depth,
+            output_dim,
+            exp_ratio,
+            heads,
+        ) in enumerate(
+            zip(
+                depths,
+                embed_dims,
+                exp_ratios,
+                num_heads,
+            )
+        ):
             blocks = []
 
-            for block_index in range(depths[stage_index]):
-                stride = 2 if block_index == 0 else 1
+            for depth_index in range(depth):
+                stride = 2 if depth_index == 0 else 1
 
-                use_dynamic_shift = (
-                    stage_index == 2
-                    and block_index > 0
+                use_spatial_mix = (
+                    stage_index >= 2 and depth_index > 0
                 )
 
                 blocks.append(
-                    LocalIRBlock(
+                    IRRWKV6Block(
                         dim_in=input_dim,
-                        dim_out=embed_dims[stage_index],
+                        dim_out=output_dim,
                         exp_ratio=(
-                            exp_ratios[stage_index] * 2
-                            if block_index == 0
-                            else exp_ratios[stage_index]
+                            exp_ratio * 2
+                            if depth_index == 0
+                            else exp_ratio
                         ),
                         stride=stride,
-                        kernel_size=5,
-                        drop_path=drop_rates[drop_index],
-                        use_dynamic_shift=use_dynamic_shift,
-                        layer_scale_init=1e-4,
+                        num_heads=heads,
+                        drop_path=drop_rates[block_index],
+                        use_spatial_mix=use_spatial_mix,
+                        local_kernel_size=5,
                     )
                 )
 
-                input_dim = embed_dims[stage_index]
-                drop_index += 1
+                input_dim = output_dim
+                block_index += 1
 
             stages.append(nn.Sequential(*blocks))
 
@@ -956,25 +719,6 @@ class MedRWKV6Encoder(nn.Module):
         self.stage2 = stages[1]
         self.stage3 = stages[2]
         self.stage4 = stages[3]
-
-        self.matrix_bottleneck = MatrixRWKVBottleneckBlock(
-            dim=embed_dims[3],
-            num_heads=bottleneck_heads,
-            low_rank_dim=bottleneck_low_rank,
-            channel_ratio=2.0,
-            drop_path=drop_path_rate,
-            layer_scale_init=1e-4,
-        )
-
-        self.bottleneck_refine = LocalIRBlock(
-            dim_in=embed_dims[3],
-            dim_out=embed_dims[3],
-            exp_ratio=2.0,
-            stride=1,
-            kernel_size=5,
-            drop_path=drop_path_rate,
-            use_dynamic_shift=False,
-        )
 
     def forward(
         self,
@@ -992,57 +736,37 @@ class MedRWKV6Encoder(nn.Module):
         enc3 = self.stage3(enc2)
         enc4 = self.stage4(enc3)
 
-        enc4 = self.matrix_bottleneck(enc4)
-        enc4 = self.bottleneck_refine(enc4)
-
         return enc1, enc2, enc3, enc4
 
 
-class SkipGate(nn.Module):
-    def __init__(self, channels: int) -> None:
-        super().__init__()
-
-        self.gate = nn.Conv2d(
-            channels,
-            channels,
-            kernel_size=1,
-            bias=True,
-        )
-
-        nn.init.zeros_(self.gate.weight)
-        nn.init.zeros_(self.gate.bias)
-
-    def forward(self, skip: torch.Tensor) -> torch.Tensor:
-        gate = torch.sigmoid(self.gate(skip))
-        return skip * (1.0 + gate)
-
-
-class DecoderBlock(nn.Module):
+class ConvDecoderBlock(nn.Module):
     def __init__(
         self,
         dim_in: int,
         skip_dim: int,
         dim_out: int,
-        use_skip_gate: bool = True,
     ) -> None:
         super().__init__()
 
-        self.skip_gate = (
-            SkipGate(skip_dim)
-            if use_skip_gate
-            else nn.Identity()
-        )
-
-        self.conv1 = ConvGNAct(
-            dim_in + skip_dim,
-            dim_out,
-            kernel_size=3,
-        )
-
-        self.conv2 = ConvGNAct(
-            dim_out,
-            dim_out,
-            kernel_size=3,
+        self.conv = nn.Sequential(
+            nn.Conv2d(
+                dim_in + skip_dim,
+                dim_out,
+                kernel_size=3,
+                padding=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(dim_out),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(
+                dim_out,
+                dim_out,
+                kernel_size=3,
+                padding=1,
+                bias=False,
+            ),
+            nn.BatchNorm2d(dim_out),
+            nn.SiLU(inplace=True),
         )
 
     def forward(
@@ -1057,94 +781,72 @@ class DecoderBlock(nn.Module):
             align_corners=False,
         )
 
-        skip = self.skip_gate(skip)
         x = torch.cat([x, skip], dim=1)
-
-        x = self.conv1(x)
-        x = self.conv2(x)
-
-        return x
+        return self.conv(x)
 
 
-class MedAxialRWKV6UNet(nn.Module):
+class RWKV_UNetV6(nn.Module):
     """
-    MedAxial-RWKV6 U-Net
+    Axial RWKV-6-inspired U-Net for medical image segmentation.
 
-    Design goals:
-    - stable training with small medical-image batches
-    - high-resolution input support
-    - bottleneck-only matrix-state recurrence
-    - limited model complexity for small datasets
-    - optional two-level deep supervision
-
-    Output:
-    - deep_supervision=False:
-        logits
-    - deep_supervision=True:
-        {"out": logits, "aux": auxiliary_logits}
+    Notes:
+    - No custom CUDA extension is required.
+    - Matrix-valued recurrence is implemented in plain PyTorch.
+    - The recurrent scan is only enabled in deeper encoder stages.
+    - Practical input resolution is limited by memory and runtime.
     """
 
     def __init__(
         self,
-        input_channels: int = 1,
+        input_channels: int = 3,
         num_classes: int = 1,
         stem_dim: int = 24,
-        depths: Tuple[int, int, int, int] = (2, 2, 3, 2),
-        embed_dims: Tuple[int, int, int, int] = (48, 72, 128, 192),
-        exp_ratios: Tuple[float, float, float, float] = (2.0, 2.0, 2.5, 2.0),
-        drop_path_rate: float = 0.05,
-        bottleneck_heads: int = 8,
-        bottleneck_low_rank: int = 32,
-        use_skip_gate: bool = True,
-        deep_supervision: bool = False,
+        depths: Tuple[int, ...] = (2, 2, 4, 2),
+        embed_dims: Tuple[int, ...] = (48, 72, 144, 240),
+        exp_ratios: Tuple[float, ...] = (2.0, 2.5, 3.0, 3.0),
+        num_heads: Tuple[int, ...] = (1, 1, 4, 6),
+        drop_path_rate: float = 0.1,
     ) -> None:
         super().__init__()
 
-        self.deep_supervision = deep_supervision
-
-        self.encoder = MedRWKV6Encoder(
+        self.encoder = RWKV6UNetEncoder(
             input_channels=input_channels,
             stem_dim=stem_dim,
             depths=depths,
             embed_dims=embed_dims,
             exp_ratios=exp_ratios,
+            num_heads=num_heads,
             drop_path_rate=drop_path_rate,
-            bottleneck_heads=bottleneck_heads,
-            bottleneck_low_rank=bottleneck_low_rank,
         )
 
-        self.decoder3 = DecoderBlock(
+        self.decoder3 = ConvDecoderBlock(
             dim_in=embed_dims[3],
             skip_dim=embed_dims[2],
             dim_out=embed_dims[2],
-            use_skip_gate=use_skip_gate,
         )
 
-        self.decoder2 = DecoderBlock(
+        self.decoder2 = ConvDecoderBlock(
             dim_in=embed_dims[2],
             skip_dim=embed_dims[1],
             dim_out=embed_dims[1],
-            use_skip_gate=use_skip_gate,
         )
 
-        self.decoder1 = DecoderBlock(
+        self.decoder1 = ConvDecoderBlock(
             dim_in=embed_dims[1],
             skip_dim=embed_dims[0],
             dim_out=embed_dims[0],
-            use_skip_gate=use_skip_gate,
         )
 
-        self.final_refine = nn.Sequential(
-            ConvGNAct(
+        self.final_decoder = nn.Sequential(
+            nn.Conv2d(
                 embed_dims[0],
                 stem_dim,
                 kernel_size=3,
+                padding=1,
+                bias=False,
             ),
-            ConvGNAct(
-                stem_dim,
-                stem_dim,
-                kernel_size=3,
-            ),
+            nn.BatchNorm2d(stem_dim),
+            nn.SiLU(inplace=True),
         )
 
         self.segmentation_head = nn.Conv2d(
@@ -1153,72 +855,41 @@ class MedAxialRWKV6UNet(nn.Module):
             kernel_size=1,
         )
 
-        if deep_supervision:
-            self.auxiliary_head = nn.Conv2d(
-                embed_dims[1],
-                num_classes,
-                kernel_size=1,
-            )
-
-    def forward(
-        self,
-        x: torch.Tensor,
-    ) -> Union[
-        torch.Tensor,
-        dict,
-    ]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         input_size = x.shape[-2:]
 
         enc1, enc2, enc3, enc4 = self.encoder(x)
 
-        dec3 = self.decoder3(enc4, enc3)
-        dec2 = self.decoder2(dec3, enc2)
-        dec1 = self.decoder1(dec2, enc1)
+        x = self.decoder3(enc4, enc3)
+        x = self.decoder2(x, enc2)
+        x = self.decoder1(x, enc1)
 
         x = F.interpolate(
-            dec1,
+            x,
             size=input_size,
             mode="bilinear",
             align_corners=False,
         )
 
-        x = self.final_refine(x)
+        x = self.final_decoder(x)
         logits = self.segmentation_head(x)
 
-        if not self.deep_supervision:
-            return logits
-
-        auxiliary_logits = self.auxiliary_head(dec2)
-        auxiliary_logits = F.interpolate(
-            auxiliary_logits,
-            size=input_size,
-            mode="bilinear",
-            align_corners=False,
-        )
-
-        return {
-            "out": logits,
-            "aux": auxiliary_logits,
-        }
+        return logits
 
 
-def med_axial_rwkv6_unet(
-    input_channel: int = 1,
+def rwkv_unet_v6(
+    input_channel: int = 3,
     num_classes: int = 1,
     **kwargs,
-) -> MedAxialRWKV6UNet:
-    return MedAxialRWKV6UNet(
+) -> RWKV_UNetV6:
+    return RWKV_UNetV6(
         input_channels=input_channel,
         num_classes=num_classes,
         **kwargs,
     )
 
 
-# ============================================================
-# Diagnostics and self-test
-# ============================================================
-
-def count_trainable_parameters(model: nn.Module) -> int:
+def count_parameters(model: nn.Module) -> int:
     return sum(
         parameter.numel()
         for parameter in model.parameters()
@@ -1226,52 +897,16 @@ def count_trainable_parameters(model: nn.Module) -> int:
     )
 
 
-def check_finite_gradients(model: nn.Module) -> None:
-    for name, parameter in model.named_parameters():
-        if parameter.grad is None:
-            continue
-
-        if not torch.isfinite(parameter.grad).all():
-            raise FloatingPointError(
-                f"Non-finite gradient detected in {name}"
-            )
-
-
-def report_missing_gradients(
-    model: nn.Module,
-    keyword: str = "matrix_bottleneck",
-) -> None:
-    missing = []
-
-    for name, parameter in model.named_parameters():
-        if keyword in name and parameter.requires_grad:
-            if parameter.grad is None:
-                missing.append(name)
-
-    if missing:
-        print("Parameters without gradients:")
-        for name in missing:
-            print(f"  - {name}")
-    else:
-        print(
-            f"All trainable parameters containing "
-            f"'{keyword}' received gradients."
-        )
-
-
 def self_test() -> None:
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
-    model = med_axial_rwkv6_unet(
+    model = rwkv_unet_v6(
         input_channel=1,
         num_classes=4,
-        deep_supervision=True,
     ).to(device)
 
-    # 128x128 is used for a quick self-test.
-    # The architecture itself supports dynamic spatial sizes.
     image = torch.randn(
         1,
         1,
@@ -1287,35 +922,16 @@ def self_test() -> None:
         device=device,
     )
 
-    output = model(image)
-
-    logits = output["out"]
-    auxiliary_logits = output["aux"]
+    logits = model(image)
 
     expected_shape = (1, 4, 128, 128)
-
     if logits.shape != expected_shape:
         raise RuntimeError(
-            f"Unexpected main output shape: {logits.shape}"
+            f"Unexpected output shape: {logits.shape}, "
+            f"expected {expected_shape}"
         )
 
-    if auxiliary_logits.shape != expected_shape:
-        raise RuntimeError(
-            f"Unexpected auxiliary output shape: "
-            f"{auxiliary_logits.shape}"
-        )
-
-    main_loss = F.cross_entropy(
-        logits,
-        target,
-    )
-
-    auxiliary_loss = F.cross_entropy(
-        auxiliary_logits,
-        target,
-    )
-
-    loss = main_loss + 0.3 * auxiliary_loss
+    loss = F.cross_entropy(logits, target)
 
     if not torch.isfinite(loss):
         raise FloatingPointError(
@@ -1324,18 +940,20 @@ def self_test() -> None:
 
     loss.backward()
 
-    check_finite_gradients(model)
-    report_missing_gradients(model)
+    for name, parameter in model.named_parameters():
+        if parameter.grad is None:
+            continue
+
+        if not torch.isfinite(parameter.grad).all():
+            raise FloatingPointError(
+                f"Non-finite gradient detected in {name}"
+            )
 
     print(f"Device: {device}")
-    print(f"Main output: {tuple(logits.shape)}")
-    print(f"Aux output: {tuple(auxiliary_logits.shape)}")
-    print(
-        f"Trainable parameters: "
-        f"{count_trainable_parameters(model):,}"
-    )
+    print(f"Output shape: {tuple(logits.shape)}")
+    print(f"Trainable parameters: {count_parameters(model):,}")
     print(f"Loss: {loss.item():.6f}")
-    print("Forward/backward self-test passed.")
+    print("Forward and backward test passed.")
 
 
 if __name__ == "__main__":

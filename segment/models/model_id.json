@@ -610,8 +610,13 @@
         "filename": "RWKV_UNetV4.py"
     },
     {
-        "modelname": "RWKV_UNetV6",
+        "modelname": "RWKV_UNetV5",
         "id": 124,
+        "filename": "RWKV_UNetV5.py"
+    },
+    {
+        "modelname": "RWKV_UNetV6",
+        "id": 125,
         "filename": "RWKV_UNetV6.py"
     }
 ]

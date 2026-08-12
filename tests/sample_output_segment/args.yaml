@@ -1,4 +1,4 @@
-model: RWKV_UNetV6
+model: RWKV_UNetV5
 dataset_name: unet_meskoseg_9class
 max_epochs: 3
 img_size: 256

@@ -5,11 +5,15 @@
 Default được đặt trong `cfg/default.yaml`; option CLI ghi đè trực tiếp. Model
 là tên trong `segment.models.MODEL_REGISTRY`. Mỗi lần train lưu vào
 `<project>/runs/<name>` với `weights/`, `samples/`, `args.yaml`, `summary.yaml`
-và ONNX (RWKV_UNetV3/V6).
+và ONNX (RWKV_UNetV3/V5/V6).
 `best.pt` vẫn được cập nhật ngay khi Dice tốt hơn. Để không làm chậm training,
 ONNX chỉ đồng bộ ở epoch 1, mỗi 10 epoch và epoch cuối, với điều kiện có best
 mới kể từ lần export trước. Có thể đổi chu kỳ bằng `--onnx-export-interval`.
 Ảnh sample có chiều rộng 800 px và giữ nguyên tỷ lệ.
+
+`weights/best.pt` là checkpoint inference gọn, không chứa AdamW state.
+`weights/last.pt` giữ đầy đủ optimizer để `--resume`, nên thường lớn gần gấp ba
+weight FP32. ONNX là FP32 deployment graph nên kích thước gần `best.pt` là bình thường.
 
 Để chạy từ notebook hoặc thư mục ngoài repository, cài source một lần bằng
 đúng Python của kernel:
@@ -56,10 +60,19 @@ Các argument chung với landmark: `--project`, `--dataset`, `--model`,
 `[0,1]`, `0,1`; `[-1]` chọn CPU. Mặc định `exist_ok=True`, và mọi folder cần
 thiết được tạo bằng `parents=True, exist_ok=True`.
 
+Tên phiên bản hiện tại:
+
+- `RWKV_UNetV5`: bản MedAxial gọn trước đây có tên V6.
+- `RWKV_UNetV6`: bản matrix-state full trước đây nằm trong `RWKV_UNetV6_full.py`.
+- ONNX tương ứng là `rwkv_unetv5.onnx` và `rwkv_unetv6.onnx`.
+
+Checkpoint của run V6 gọn cũ phải resume bằng `--model RWKV_UNetV5`; loader
+sẽ từ chối kiến trúc không khớp thay vì âm thầm load một phần weight.
+
 Muốn dùng YAML khác:
 
 ```bash
 python -m segment.main --config segment/cfg/default.yaml \
-  --model RWKV_UNetV6 --project /projects/BMammo/Knee \
-  --dataset /unet_mesko5seg --name rwkv6_baseline
+  --model RWKV_UNetV5 --project /projects/BMammo/Knee \
+  --dataset /unet_mesko5seg --name rwkv5_compact_baseline
 ```

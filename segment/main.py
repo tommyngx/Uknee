@@ -171,7 +171,7 @@ def _wrap_data_parallel_if_needed(model, args, logger=None):
     return nn.DataParallel(model, device_ids=device_ids)
 
 
-def _load_model_state_dict(model, state_dict, logger=None):
+def _load_model_state_dict(model, state_dict, logger=None, *, strict=False):
     target = _unwrap_model(model)
     model_state = target.state_dict()
 
@@ -184,8 +184,13 @@ def _load_model_state_dict(model, state_dict, logger=None):
     try:
         target.load_state_dict(state_dict, strict=True)
         return
-    except RuntimeError:
-        pass
+    except RuntimeError as exc:
+        if strict:
+            raise RuntimeError(
+                "Checkpoint architecture does not match the requested model. "
+                "Legacy compact RWKV_UNetV6 checkpoints were renamed to RWKV_UNetV5; "
+                "resume those runs with --model RWKV_UNetV5."
+            ) from exc
 
     matched_state_dict = {}
     mismatched_keys = []
@@ -336,17 +341,46 @@ def _build_optimizer(args, model, logger):
     return optimizer, args.base_lr, "SGD"
 
 
-def _save_checkpoint(path, args, model, optimizer, epoch, best_dice, metrics=None):
+def _save_checkpoint(path, args, model, optimizer, epoch, best_dice, metrics=None, *, include_optimizer=True):
+    """Save a resumable last.pt or a compact inference-only best.pt."""
     checkpoint = {
+        'checkpoint_type': 'resume' if include_optimizer else 'inference_best',
         'epoch': epoch,
         'state_dict': _unwrap_model(model).state_dict(),
-        'optimizer': optimizer.state_dict() if optimizer is not None else None,
         'best_dice': best_dice,
         'metrics': convert_to_numpy(metrics or {}),
         'config': vars(args),
         'preprocess': segment_preprocess_schema(args),
     }
-    torch.save(checkpoint, path)
+    if include_optimizer:
+        checkpoint['optimizer'] = optimizer.state_dict() if optimizer is not None else None
+    path = Path(path)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        torch.save(checkpoint, temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _compact_existing_best_checkpoint(path):
+    """Remove legacy optimizer state from best.pt without changing its model weights."""
+    path = Path(path)
+    if not path.is_file():
+        return False
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if not isinstance(checkpoint, dict) or "optimizer" not in checkpoint:
+        return False
+    checkpoint.pop("optimizer", None)
+    checkpoint["checkpoint_type"] = "inference_best"
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        torch.save(checkpoint, temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return True
 
 
 
@@ -378,7 +412,7 @@ def load_model(args, model_best_or_final="best"):
     else:
         state_dict = checkpoint
 
-    _load_model_state_dict(model, state_dict)
+    _load_model_state_dict(model, state_dict, strict=True)
 
     model.to(device)
     model = _wrap_data_parallel_if_needed(model, args)
@@ -532,7 +566,7 @@ def _export_best_segment_onnx(args, model, weights_dir, run_dir, class_names, lo
             input_channel=args.input_channel,
             num_classes=args.num_classes,
         ).cpu()
-        _load_model_state_dict(export_model, checkpoint["state_dict"], logger=logger)
+        _load_model_state_dict(export_model, checkpoint["state_dict"], logger=logger, strict=True)
 
     onnx_path = weights_dir / onnx_filename(args.model)
     temporary = onnx_path.with_name(f".{onnx_path.stem}.tmp.onnx")
@@ -657,12 +691,14 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
                 f"Cannot resume: neither '{weights_dir / 'last.pt'}' nor legacy '{run_dir / 'last.pt'}' exists"
             )
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        _load_model_state_dict(model, checkpoint["state_dict"], logger=logger)
+        _load_model_state_dict(model, checkpoint["state_dict"], logger=logger, strict=True)
         if checkpoint.get("optimizer") is not None:
             optimizer.load_state_dict(checkpoint["optimizer"])
         start_epoch = int(checkpoint.get("epoch", 0))
         best_dice = float(checkpoint.get("best_dice", best_dice))
         history_rows = [row for row in history_rows if int(row["epoch"]) <= start_epoch]
+        if _compact_existing_best_checkpoint(weights_dir / "best.pt"):
+            logger.info("Compacted legacy best.pt by removing optimizer state; last.pt remains resumable.")
 
     logger.info("model=%s parameters=%d optimizer=%s criterion=%s output=%s",
                 args.model, sum(p.numel() for p in model.parameters() if p.requires_grad),
@@ -730,11 +766,17 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
         history_rows.append(epoch_row)
         history_writer.append(epoch_row)
 
-        _save_checkpoint(weights_dir / "last.pt", args, model, optimizer, epoch_id, max(best_dice, snapshot.dice), epoch_row)
+        _save_checkpoint(
+            weights_dir / "last.pt", args, model, optimizer, epoch_id,
+            max(best_dice, snapshot.dice), epoch_row, include_optimizer=True,
+        )
         if snapshot.dice > best_dice:
             best_dice = snapshot.dice
             best_epoch = epoch_id
-            _save_checkpoint(weights_dir / "best.pt", args, model, optimizer, epoch_id, best_dice, epoch_row)
+            _save_checkpoint(
+                weights_dir / "best.pt", args, model, optimizer, epoch_id,
+                best_dice, epoch_row, include_optimizer=False,
+            )
         if _should_export_pending_best(
             epoch_id,
             args.max_epochs,
@@ -858,7 +900,9 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
         },
         "artifacts": {
             "best_checkpoint": "weights/best.pt",
+            "best_checkpoint_type": "inference_best_without_optimizer",
             "last_checkpoint": "weights/last.pt",
+            "last_checkpoint_type": "resumable_with_optimizer",
             "metrics": "results.csv",
             "dashboard": "segment_dashboard.png",
             "metric_report": "segment_metrics.png",
