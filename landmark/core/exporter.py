@@ -30,9 +30,27 @@ def pose_onnx_metadata(model: torch.nn.Module, args: dict[str, Any], height: int
         stride_value = stride_value.max().item()
     elif isinstance(stride_value, (list, tuple)):
         stride_value = max(stride_value)
+    task = str(getattr(model, "task", "pose"))
+    if task == "detect":
+        output_contract = {
+            "detections": ["batch", "max_det", 6],
+            "num_detections": ["batch"],
+            "canonical": ["batch", len(getattr(model, "names", {})), 4],
+            "detection_format": "xyxy_score_class",
+            "canonical_format": "best_xyxy_per_class",
+            "coordinate_space": "letterboxed_input_pixels",
+        }
+    else:
+        output_contract = {
+            "detections": ["batch", 4, 159],
+            "num_detections": ["batch"],
+            "canonical": ["batch", 129, 3],
+            "keypoint_format": "x_y_confidence",
+            "coordinate_space": "letterboxed_input_pixels",
+        }
     return {
         "uknee.schema_version": "1",
-        "uknee.task": "landmark_detection",
+        "uknee.task": "knee_detection" if task == "detect" else "landmark_detection",
         "uknee.model_name": model_name,
         "uknee.source_checkpoint": str(args.get("source_checkpoint") or "weights/best.pt"),
         "uknee.opset": str(int(args.get("opset") or best_onnx_opset())),
@@ -61,16 +79,7 @@ def pose_onnx_metadata(model: torch.nn.Module, args: dict[str, Any], height: int
             },
             separators=(",", ":"),
         ),
-        "uknee.output": json.dumps(
-            {
-                "detections": ["batch", 4, 159],
-                "num_detections": ["batch"],
-                "canonical": ["batch", 129, 3],
-                "keypoint_format": "x_y_confidence",
-                "coordinate_space": "letterboxed_input_pixels",
-            },
-            separators=(",", ":"),
-        ),
+        "uknee.output": json.dumps(output_contract, separators=(",", ":")),
     }
 
 
@@ -141,7 +150,7 @@ class Exporter:
         ).expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
         if format_name == "torchscript":
-            metadata = json.dumps({"task": "pose", "stride": 32, "kpt_shape": [51, 3]})
+            metadata = json.dumps({"task": str(getattr(model, "task", "pose")), "stride": 32})
             traced = trace_torchscript(model, image)
             torch.jit.save(traced, str(destination), _extra_files={"config.txt": metadata})
         else:

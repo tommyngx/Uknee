@@ -8,6 +8,7 @@ import hashlib
 import math
 import os
 from collections import Counter, defaultdict
+from copy import copy
 from pathlib import Path
 import re
 import sys
@@ -24,7 +25,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from uknee_cli import gpu_ids_to_device, parse_gpu_ids, parse_image_size, safe_run_name
 
 
-DEFAULT_CFG = PACKAGE_ROOT / "cfg" / "default.yaml"
+DEFAULT_CFG = PACKAGE_ROOT / "cfg" / "detect" / "kneelocation.yaml"
 DEFAULT_DATA = PACKAGE_ROOT / "cfg" / "datasets" / "kneelocation.yaml"
 MODEL_ROOT = PACKAGE_ROOT / "cfg" / "models"
 IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
@@ -39,6 +40,14 @@ if _gpu_args.gpu is not None:
         "" if _gpu_args.gpu == [-1] else ",".join(map(str, _gpu_args.gpu))
     )
 
+import numpy as np
+import torch
+from PIL import Image
+
+from landmark.core import RANK
+from landmark.core.detect import DetectionTrainer, DetectionValidator
+from landmark.core.torch_utils import unwrap_model
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train an Uknee YOLO knee detector")
@@ -46,21 +55,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default="yolo26-detect", help="Detection YAML or .pt checkpoint")
     parser.add_argument("--data", "--dataset", dest="data", default=str(DEFAULT_DATA), help="Detection dataset YAML")
     parser.add_argument("--project", default=str(REPOSITORY_ROOT), help="Output root; runs are written below it")
-    parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--imgsz", "--imgz", "--img_size", dest="imgsz", type=parse_image_size, default=[640, 640])
-    parser.add_argument("--batch", "--batch_size", dest="batch", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--imgsz", "--imgz", "--img_size", dest="imgsz", type=parse_image_size, default=None)
+    parser.add_argument("--batch", "--batch_size", dest="batch", type=int, default=None)
     parser.add_argument("--base_lr", type=float, default=None)
     parser.add_argument("--gpu", type=parse_gpu_ids, default=[0])
     parser.add_argument("--workers", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--name", default="")
     parser.add_argument("--exist_ok", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume", nargs="?", const=True, default=False)
     parser.add_argument("--pretrained", nargs="?", const=True, default=None)
-    parser.add_argument("--patience", type=int, default=50)
+    parser.add_argument("--patience", type=int, default=None)
     parser.add_argument("--cache", nargs="?", const=True, default=None)
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--auto-export-onnx", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--auto-export-onnx", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(
         "overrides",
         nargs="*",
@@ -330,6 +339,91 @@ def _xray_detection_defaults() -> dict[str, Any]:
     }
 
 
+class DetectionReportValidator(DetectionValidator):
+    """Detection validator that writes one real four-image sample grid per epoch."""
+
+    def init_metrics(self, model: torch.nn.Module) -> None:
+        super().init_metrics(model)
+        self._sample_records: list[dict[str, Any]] = []
+
+    def update_metrics(self, preds: list[dict[str, torch.Tensor]], batch: dict[str, Any]) -> None:
+        super().update_metrics(preds, batch)
+        if RANK not in {-1, 0} or len(self._sample_records) >= 4:
+            return
+        for index, pred in enumerate(preds):
+            if len(self._sample_records) >= 4:
+                break
+            prepared = self._prepare_batch(index, batch)
+            scaled = self.scale_preds(pred, prepared)
+            try:
+                with Image.open(prepared["im_file"]) as source:
+                    image = np.asarray(source.convert("RGB"), dtype=np.float32) / 255.0
+            except Exception:
+                image = (
+                    batch["img"][index]
+                    .detach()
+                    .float()
+                    .clamp(0, 1)
+                    .cpu()
+                    .permute(1, 2, 0)
+                    .numpy()
+                )
+                scaled = pred
+            confidence = scaled["conf"].detach().float().cpu()
+            keep = confidence >= max(float(self.args.conf or 0.001), 0.25)
+            boxes = scaled["bboxes"].detach().float().cpu()[keep]
+            if boxes.numel():
+                boxes[:, [0, 2]].clamp_(0, image.shape[1])
+                boxes[:, [1, 3]].clamp_(0, image.shape[0])
+            self._sample_records.append(
+                {
+                    "path": str(batch["im_file"][index]),
+                    "image": image,
+                    "boxes": boxes.numpy(),
+                    "classes": scaled["cls"].detach().long().cpu()[keep].tolist(),
+                    "scores": confidence[keep].tolist(),
+                    "names": dict(self.names),
+                }
+            )
+
+    def get_stats(self) -> dict[str, Any]:
+        stats = super().get_stats()
+        if RANK in {-1, 0} and self._sample_records:
+            map50 = float(stats.get("metrics/mAP50(B)", 0.0))
+            map5095 = float(stats.get("metrics/mAP50-95(B)", 0.0))
+            for record in self._sample_records:
+                record.update(map50=map50, map5095=map5095)
+            from landmark.core.plotting_det import plot_detection_validation_samples
+
+            epoch = max(int(getattr(self, "_report_epoch", 1)), 1)
+            plot_detection_validation_samples(
+                self._sample_records,
+                self.save_dir / "samples" / f"detection_sample_e{epoch}.png",
+                epoch=epoch,
+            )
+            self._sample_paths = [Path(record["path"]).name for record in self._sample_records]
+        return stats
+
+
+class DetectionReportTrainer(DetectionTrainer):
+    """Detection trainer retaining the native loop while adding report artifacts."""
+
+    def get_validator(self) -> DetectionReportValidator:
+        self.loss_names = "box_loss", "cls_loss", "dfl_loss"
+        validator = DetectionReportValidator(
+            self.test_loader,
+            save_dir=self.save_dir,
+            args=copy(self.args),
+            _callbacks=self.callbacks,
+        )
+        validator._report_epoch = max(int(getattr(self, "epoch", 0)) + 1, 1)
+        return validator
+
+    def validate(self):
+        self.validator._report_epoch = max(int(self.epoch) + 1, 1)
+        return super().validate()
+
+
 def _clean_row(row: dict[str, str]) -> dict[str, float | int]:
     cleaned: dict[str, float | int] = {}
     for key, raw in row.items():
@@ -341,7 +435,24 @@ def _clean_row(row: dict[str, str]) -> dict[str, float | int]:
     return cleaned
 
 
-def write_detection_summary(save_dir: Path, model_path: Path, audit: dict[str, Any], onnx: Path | None = None) -> Path:
+def _scalar_metrics(values: Any) -> dict[str, float]:
+    if not isinstance(values, dict):
+        return {}
+    return {
+        str(key): float(value)
+        for key, value in values.items()
+        if isinstance(value, (int, float)) or hasattr(value, "item")
+    }
+
+
+def write_detection_summary(
+    save_dir: Path,
+    model_path: Path,
+    audit: dict[str, Any],
+    onnx: Path | None = None,
+    elapsed_seconds: float | None = None,
+    trainer: DetectionTrainer | None = None,
+) -> Path:
     csv_path = save_dir / "results.csv"
     rows: list[dict[str, float | int]] = []
     if csv_path.is_file():
@@ -350,18 +461,74 @@ def write_detection_summary(save_dir: Path, model_path: Path, audit: dict[str, A
     metric = "metrics/mAP50-95(B)"
     best = max(rows, key=lambda row: float(row.get(metric, float("-inf")))) if rows else {}
     final = rows[-1] if rows else {}
+
+    if csv_path.is_file():
+        try:
+            from landmark.core.plotting_det import plot_dashboard_detection, plot_detection_metrics
+
+            plot_dashboard_detection(
+                csv_path,
+                save_dir / "detection_dashboard.png",
+                model_name=model_path.stem,
+                elapsed_seconds=elapsed_seconds,
+            )
+            class_names = list(audit.get("class_instances", {}).keys()) or ["RightKnee", "LeftKnee"]
+            plot_detection_metrics(
+                getattr(getattr(trainer, "validator", None), "metrics", None),
+                save_dir / "detection_metrics.png",
+                model_name=model_path.stem,
+                elapsed_seconds=elapsed_seconds,
+                epochs_completed=len(rows),
+                class_names=class_names,
+            )
+        except Exception as error:
+            print(f"Warning: Failed to generate detection report plots: {error}")
+
     plot_files = sorted(
         str(path.relative_to(save_dir))
         for pattern in ("*.png", "*.jpg")
         for path in save_dir.glob(pattern)
         if path.is_file()
     )
+    sample_paths = list(getattr(getattr(trainer, "validator", None), "_sample_paths", []))
+    sample_files = sorted((save_dir / "samples").glob("detection_sample_e*.png"))
+    args = getattr(trainer, "args", None)
+    image_size = parse_image_size(getattr(args, "imgsz", [640, 640]))
+    height, width = image_size
+    model = unwrap_model(getattr(trainer, "model", None)) if trainer is not None else None
+    parameters = sum(parameter.numel() for parameter in model.parameters()) if model is not None else None
+    trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad) if model is not None else None
+    try:
+        from landmark.core.torch_utils import get_flops
+
+        gflops = float(get_flops(model, imgsz=image_size)) if model is not None else None
+    except Exception:
+        gflops = None
+    epochs_completed = len(rows)
+    duration = float(elapsed_seconds or 0.0)
+    final_validation = _scalar_metrics(getattr(trainer, "metrics", {}))
+
+    onnx_record: dict[str, Any] = {"status": "disabled"}
+    if onnx and onnx.is_file():
+        from landmark.core.exporter import onnx_sha256, read_onnx_metadata
+
+        metadata = read_onnx_metadata(onnx)
+        onnx_record = {
+            "status": "ready",
+            "path": str(onnx.relative_to(save_dir)) if onnx.is_relative_to(save_dir) else str(onnx),
+            "format": "onnx",
+            "sha256": onnx_sha256(onnx),
+            "file_size_bytes": onnx.stat().st_size,
+            "metadata": metadata,
+        }
     artifacts = {
         key: value
         for key, value in {
             "best_checkpoint": "weights/best.pt" if (save_dir / "weights/best.pt").is_file() else None,
             "last_checkpoint": "weights/last.pt" if (save_dir / "weights/last.pt").is_file() else None,
             "metrics": "results.csv" if csv_path.is_file() else None,
+            "dashboard": "detection_dashboard.png" if (save_dir / "detection_dashboard.png").is_file() else None,
+            "metric_report": "detection_metrics.png" if (save_dir / "detection_metrics.png").is_file() else None,
             "training_plot": "results.png" if (save_dir / "results.png").is_file() else None,
             "labels_plot": "labels.jpg" if (save_dir / "labels.jpg").is_file() else None,
             "confusion_matrix": "confusion_matrix.png" if (save_dir / "confusion_matrix.png").is_file() else None,
@@ -371,33 +538,99 @@ def write_detection_summary(save_dir: Path, model_path: Path, audit: dict[str, A
         if value is not None
     }
     summary = {
+        "schema_version": 2,
         "task": "knee_detection",
-        "model": {"source": str(model_path), "name": model_path.stem},
-        "dataset": audit,
+        "model": {
+            "source": str(model_path),
+            "name": model_path.stem,
+            "parameters": parameters,
+            "trainable_parameters": trainable,
+            "gflops": gflops,
+            "gflops_convention": "2 x MACs for one forward pass",
+            "input_shape": [1, 3, height, width],
+        },
+        "dataset": {
+            **audit,
+            "config": audit.get("source_yaml"),
+            "classes": {index: name for index, name in enumerate(audit.get("class_instances", {}))},
+        },
+        "preprocessing": {
+            "schema_version": 1,
+            "source_spatial_shape": "dynamic",
+            "network_input_shape": [1, 3, height, width],
+            "layout": "NCHW",
+            "dtype": "float32",
+            "color_space": "RGB",
+            "value_range": [0.0, 1.0],
+            "normalization": {"mode": "scale_0_1", "mean": [0.0, 0.0, 0.0], "std": [1.0, 1.0, 1.0]},
+            "resize": {
+                "mode": "letterbox",
+                "keep_aspect_ratio": True,
+                "target_height": height,
+                "target_width": width,
+                "pad_value": 114,
+                "placement": "center",
+                "stride": 32,
+            },
+        },
+        "training": {
+            "epochs_requested": int(getattr(args, "epochs", epochs_completed)),
+            "epochs_completed": epochs_completed,
+            "batch_size": int(getattr(args, "batch", 0)),
+            "seed": int(getattr(args, "seed", 0)),
+            "optimizer": type(getattr(trainer, "optimizer", None)).__name__ if trainer is not None else None,
+            "initial_learning_rate": float(
+                getattr(trainer, "optimizer", None).param_groups[0].get("initial_lr", getattr(args, "lr0", 0.0))
+                if trainer is not None and getattr(trainer, "optimizer", None) is not None
+                else getattr(args, "lr0", 0.0)
+            ),
+            "configured_initial_learning_rate": float(getattr(args, "lr0", 0.0)),
+            "duration_seconds": round(duration, 3),
+            "duration_hours": round(duration / 3600.0, 6),
+            "seconds_per_epoch": round(duration / max(epochs_completed, 1), 3),
+            "device": str(getattr(trainer, "device", "")),
+            "torch_version": str(torch.__version__),
+        },
         "performance": {
             "selection_metric": metric,
             "selection_mode": "max",
             "best_epoch": best.get("epoch"),
             "best": best,
             "final": final,
+            "best_checkpoint_validation": final_validation,
+        },
+        "deployment": {
+            "auto_export_onnx": bool(getattr(args, "auto_export_onnx", False)),
+            "onnx": onnx_record,
         },
         "artifacts": artifacts,
     }
+    summary["artifacts"].update(
+        {
+            "samples": "samples/detection_sample_e{epoch}.png" if sample_files else None,
+            "samples_per_epoch": len(sample_paths),
+            "sample_seed": int(getattr(args, "seed", 2026)),
+            "sample_paths": sample_paths,
+            "sample_output_width": 800,
+        }
+    )
+    summary["artifacts"] = {key: value for key, value in summary["artifacts"].items() if value is not None}
     path = save_dir / "summary.yaml"
     path.write_text(yaml.safe_dump(summary, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return path
 
 
 def main(argv: list[str] | None = None) -> Any:
+    import time
+
     parsed = vars(build_parser().parse_args(argv))
     project = Path(parsed.pop("project")).expanduser().resolve()
     model_path = resolve_model_source(parsed.pop("model"))
     dataset_yaml, audit = prepare_detection_dataset(parsed.pop("data"), project)
     overrides = _parse_overrides(parsed.pop("overrides"))
-    config = _load_yaml(parsed.pop("config"))
+    config = {**_xray_detection_defaults(), **_load_yaml(parsed.pop("config"))}
     for key in ("task", "mode", "model", "data", "source", "save_dir"):
         config.pop(key, None)
-    config.update(_xray_detection_defaults())
     config.update({key: value for key, value in parsed.items() if value is not None})
     config.update(overrides)
     config.update(
@@ -408,7 +641,7 @@ def main(argv: list[str] | None = None) -> Any:
         device=gpu_ids_to_device(parsed["gpu"]),
         gpu_ids=list(parsed["gpu"]),
         imgsz=parse_image_size(config.get("imgsz", 640)),
-        auto_export_onnx=bool(parsed.get("auto_export_onnx")),
+        auto_export_onnx=bool(config.get("auto_export_onnx", False)),
     )
     if parsed.get("base_lr") is not None:
         config["lr0"] = parsed["base_lr"]
@@ -432,14 +665,41 @@ def main(argv: list[str] | None = None) -> Any:
 
     from landmark.core.model import YOLO
 
+    start_time = time.time()
     model = YOLO(str(model_path), verbose=False)
-    metrics = model.train(**config)
+    metrics = model.train(trainer=DetectionReportTrainer, **config)
+    elapsed_seconds = time.time() - start_time
     save_dir = Path(model.trainer.save_dir)
     onnx_path: Path | None = None
-    if parsed.get("auto_export_onnx") and model.trainer.best.is_file():
-        exported = model.export(format="onnx", imgsz=config["imgsz"], simplify=True)
-        onnx_path = Path(exported).resolve()
-    summary = write_detection_summary(save_dir, model_path, audit, onnx_path)
+    if config.get("auto_export_onnx") and model.trainer.best.is_file():
+        from landmark.core.exporter import Exporter
+        from landmark.utils.exporting import KneeDetectionExportWrapper
+
+        onnx_path = save_dir / "weights" / f"{model_path.stem.replace('-', '_')}.onnx"
+        # Export the checkpoint selected by mAP50-95, not the in-memory last epoch.
+        best_model = YOLO(str(model.trainer.best), verbose=False)
+        wrapper = KneeDetectionExportWrapper(best_model.model, confidence=0.25).eval()
+        onnx_path = Exporter(
+            {
+                "format": "onnx",
+                "imgsz": config["imgsz"],
+                "batch": 1,
+                "dynamic": bool(config.get("dynamic", False)),
+                "simplify": bool(config.get("simplify", True)),
+                "max_det": int(config.get("max_det", 300)),
+                "path": onnx_path,
+                "model_name": model_path.stem,
+                "source_checkpoint": "weights/best.pt",
+            }
+        )(wrapper)
+    summary = write_detection_summary(
+        save_dir,
+        model_path,
+        audit,
+        onnx_path,
+        elapsed_seconds=elapsed_seconds,
+        trainer=model.trainer,
+    )
     print(f"Detection summary: {summary}")
     return metrics
 

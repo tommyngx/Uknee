@@ -127,19 +127,19 @@ train/validation split when a dataset currently contains only a train folder.
 ```bash
 python -m landmark.train_det \
   --model yolo26-detect \
+  --config landmark/cfg/detect/kneelocation.yaml \
   --data landmark/cfg/datasets/kneelocation.yaml \
   --project /projects/BMammo/Knee \
-  --imgsz 640 \
-  --batch 16 \
-  --epochs 200 \
   --gpu '[0,1]' \
   --name yolo26_detect_kneelocation
 ```
 
 Outputs use the same `<project>/runs/<name>` convention, including `weights/`,
-`args.yaml`, `results.csv`, `results.png`, detection validation plots and a
-compact `summary.yaml`. Medical landmark metrics are not emitted for detection.
-Use `--auto-export-onnx` only when an ONNX artifact is needed.
+`samples/`, `args.yaml`, `results.csv`, the detection dashboard/metric report,
+validation plots, ONNX and `summary.yaml`. The detection preset is used by
+default and can be overridden from the CLI (for example `--epochs 300`). Medical
+landmark metrics are not emitted for detection. Use `--no-auto-export-onnx` when
+only PyTorch checkpoints are required.
 
 See the repository-level `report.yaml` for measured structural, parity, loss,
 dataset, and export differences against `landmark0`.

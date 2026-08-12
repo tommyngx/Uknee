@@ -106,4 +106,44 @@ class KneePoseExportWrapper(nn.Module):
         return self.core.info(detailed=detailed, verbose=verbose, imgsz=imgsz)
 
 
-__all__ = ["KneePoseExportWrapper"]
+class KneeDetectionExportWrapper(nn.Module):
+    """Return fixed detection rows, their count, and one best box per class."""
+
+    def __init__(self, core: nn.Module, confidence: float = 0.25):
+        super().__init__()
+        self.core = core
+        self.confidence = float(confidence)
+        self.yaml = getattr(core, "yaml", {"channels": 3})
+        self.yaml_file = getattr(core, "yaml_file", self.yaml.get("yaml_file", "uknee-detect.yaml"))
+        self.names = getattr(core, "names", {0: "right_knee", 1: "left_knee"})
+        self.nc = len(self.names)
+        self.task = "detect"
+        self.stride = getattr(core, "stride", torch.tensor([32.0]))
+        self.model = core.model
+        self.end2end = True
+        self.uknee_export_contract = True
+
+    def forward(self, images: torch.Tensor):
+        raw = self.core(images)
+        predictions = raw[0] if isinstance(raw, (tuple, list)) else raw
+        if predictions.ndim != 3 or predictions.shape[-1] < 6:
+            raise RuntimeError(f"Detection export requires [B, max_det, >=6], got {tuple(predictions.shape)}")
+        detections = predictions[..., :6]
+        valid = detections[..., 4] >= self.confidence
+        detections = torch.where(valid[..., None], detections, torch.zeros_like(detections))
+        batch = torch.arange(detections.shape[0], device=detections.device)
+        class_boxes = []
+        for class_id in range(self.nc):
+            matches = valid & (detections[..., 5] == float(class_id))
+            scores = torch.where(matches, detections[..., 4], detections.new_full((), -1.0))
+            _, index = scores.max(dim=1)
+            selected = detections[batch, index, :4]
+            class_boxes.append(torch.where(matches.any(dim=1, keepdim=True), selected, torch.zeros_like(selected)))
+        canonical_boxes = torch.stack(class_boxes, dim=1)
+        return detections, valid.sum(dim=1).to(torch.int64), canonical_boxes
+
+    def info(self, detailed: bool = False, verbose: bool = True, imgsz: int = 640):
+        return self.core.info(detailed=detailed, verbose=verbose, imgsz=imgsz)
+
+
+__all__ = ["KneeDetectionExportWrapper", "KneePoseExportWrapper"]
