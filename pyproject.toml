@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 
 [project.scripts]
 uknee-landmark = "landmark.train:main"
+uknee-detect = "landmark.train_det:main"
 uknee-segment = "segment.main:main"
 
 [tool.setuptools]

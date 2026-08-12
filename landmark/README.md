@@ -118,5 +118,28 @@ Run the regression suite with:
 python -m unittest discover -s landmark/tests -v
 ```
 
+## Knee detection CLI
+
+Bounding-box detection is intentionally separate from the landmark/pose entry
+point. `train_det` validates five-column YOLO labels and creates a deterministic
+train/validation split when a dataset currently contains only a train folder.
+
+```bash
+python -m landmark.train_det \
+  --model yolo26-detect \
+  --data landmark/cfg/datasets/kneelocation.yaml \
+  --project /projects/BMammo/Knee \
+  --imgsz 640 \
+  --batch 16 \
+  --epochs 200 \
+  --gpu '[0,1]' \
+  --name yolo26_detect_kneelocation
+```
+
+Outputs use the same `<project>/runs/<name>` convention, including `weights/`,
+`args.yaml`, `results.csv`, `results.png`, detection validation plots and a
+compact `summary.yaml`. Medical landmark metrics are not emitted for detection.
+Use `--auto-export-onnx` only when an ONNX artifact is needed.
+
 See the repository-level `report.yaml` for measured structural, parity, loss,
 dataset, and export differences against `landmark0`.

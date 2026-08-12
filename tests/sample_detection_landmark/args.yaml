@@ -1,0 +1,13 @@
+model: yolo26-detect.yaml
+data: Ref/KneeLocationV6/data.yaml
+epochs: 3
+imgsz:
+- 640
+- 640
+batch: 16
+lr0: 0.001
+seed: 2006
+auto_export_onnx: true
+fliplr: 0.0
+flipud: 0.0
+mosaic: 0.5

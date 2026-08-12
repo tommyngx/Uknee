@@ -81,6 +81,10 @@ class AutoBackend(nn.Module):
 
             self.format = "pt"
             self.model, _ = load_checkpoint(str(path), device=self.device, fuse=fuse)
+            # load_checkpoint() deliberately returns an FP32 model, including when the
+            # serialized checkpoint was stripped to FP16. Match the model precision to
+            # the inputs that forward() and warmup() create for this backend.
+            self.model.half() if self.fp16 else self.model.float()
             self.names = check_class_names(getattr(self.model, "names", default_class_names(data)))
             self.stride = max(int(getattr(self.model, "stride", torch.tensor([32])).max()), 32)
             self.kpt_shape = getattr(self.model, "kpt_shape", self.kpt_shape)
@@ -121,4 +125,3 @@ class AutoBackend(nn.Module):
         head = self.model.model[-1]
         for key, value in kwargs.items():
             setattr(head, key, value)
-

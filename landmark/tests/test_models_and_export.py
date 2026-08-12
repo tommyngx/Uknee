@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
 from landmark import KneePose
+from landmark.nn.autobackend import AutoBackend
 from landmark.utils.exporting import KneePoseExportWrapper
 from landmark.core.config import get_cfg
 
@@ -39,6 +41,20 @@ class ModelAndExportTests(unittest.TestCase):
             wrapper = KneePose(ROOT / "cfg" / "models" / filename)
             self.assertEqual(type(wrapper.model.model[-1]).__name__, head_name)
             self.assertEqual(wrapper.model.yaml["scale"], scale)
+
+    def test_pt_backend_casts_loaded_checkpoint_to_requested_precision(self):
+        model = torch.nn.Conv2d(3, 4, 1)
+        model.names = {0: "landmark"}
+        model.stride = torch.tensor([32])
+
+        with patch("landmark.nn.tasks.load_checkpoint", return_value=(model, {})):
+            backend = AutoBackend("best.pt", device=torch.device("cpu"), fp16=True, fuse=False)
+
+        self.assertTrue(backend.fp16)
+        self.assertEqual(backend.model.weight.dtype, torch.float16)
+        self.assertEqual(backend.model.bias.dtype, torch.float16)
+        output = backend.model(torch.zeros(1, 3, 8, 8, dtype=torch.float16))
+        self.assertEqual(output.dtype, torch.float16)
 
     def test_heatmap_models_have_full_architectures_and_gradients(self):
         for filename, architecture in (

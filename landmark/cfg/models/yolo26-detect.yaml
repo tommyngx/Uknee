@@ -6,7 +6,7 @@
 nc: 1 # 1-class: knee (or set nc: 4 for 4-bone detection: femur, tibia, fibula, patella)
 end2end: True
 reg_max: 16 # DFL bins
-scale: n
+scale: l
 scales:
   n: [0.50, 0.25, 1024]
   s: [0.50, 0.50, 1024]

@@ -1,0 +1,18 @@
+# Knee ROI detection dataset. Paths are resolved from the repository root.
+path: Ref/KneeLocationV6
+dataset_name: kneelocation_v6
+
+# KneeLocationV6 currently stores all 460 annotated images under train.
+# train_det.py replaces these identical sources with deterministic, leakage-safe
+# train/val manifests without moving or rewriting the source data.
+train: images/train
+val: images/train
+test: images/train
+
+channels: 3
+names:
+  0: right_knee
+  1: left_knee
+
+val_fraction: 0.15
+split_seed: 2026

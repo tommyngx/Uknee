@@ -1597,3 +1597,4 @@ def plot_validation_samples(records: list[dict[str, Any]], output_png: str | Pat
 
 
 __all__ = ["plot_dashboard_pose", "plot_pose_metrics", "plot_validation_samples"]
+

@@ -1,0 +1,140 @@
+schema_version: 2
+task: knee_detection
+model:
+  name: yolo26-detect-sample
+  source: yolo26-detect.yaml
+  parameters: 3010000
+  trainable_parameters: 3010000
+  gflops: 8.12
+  gflops_convention: 2 x MACs for one forward pass
+  input_shape:
+  - 1
+  - 3
+  - 640
+  - 640
+dataset:
+  config: Ref/KneeLocationV6/data.yaml
+  classes:
+    0: RightKnee
+    1: LeftKnee
+preprocessing:
+  schema_version: 1
+  source_spatial_shape: dynamic
+  network_input_shape:
+  - 1
+  - 3
+  - 640
+  - 640
+  layout: NCHW
+  dtype: float32
+  color_space: RGB
+  value_range:
+  - 0.0
+  - 1.0
+  normalization:
+    mode: scale_0_1
+    mean:
+    - 0.0
+    - 0.0
+    - 0.0
+    std:
+    - 1.0
+    - 1.0
+    - 1.0
+  resize:
+    mode: letterbox
+    keep_aspect_ratio: true
+    target_height: 640
+    target_width: 640
+    pad_value: 114
+    placement: center
+    stride: 32
+training:
+  epochs_requested: 3
+  epochs_completed: 3
+  batch_size: 16
+  seed: 2006
+  optimizer: AdamW
+  initial_learning_rate: 0.001
+  duration_seconds: 36.0
+  duration_hours: 0.01
+  seconds_per_epoch: 12.0
+  device: cuda:0
+  torch_version: 2.11.0
+performance:
+  selection_metric: metrics/mAP50-95(B)
+  selection_mode: max
+  best_epoch: 3
+  best:
+    epoch: 3
+    train/box_loss: 0.383333
+    train/cls_loss: 0.296667
+    train/dfl_loss: 0.233333
+    val/box_loss: 0.42
+    val/cls_loss: 0.323333
+    val/dfl_loss: 0.26
+    metrics/precision(B): 0.96
+    metrics/recall(B): 0.95
+    metrics/mAP50(B): 0.98
+    metrics/mAP50-95(B): 0.875
+  final:
+    epoch: 3
+    train/box_loss: 0.383333
+    train/cls_loss: 0.296667
+    train/dfl_loss: 0.233333
+    val/box_loss: 0.42
+    val/cls_loss: 0.323333
+    val/dfl_loss: 0.26
+    metrics/precision(B): 0.96
+    metrics/recall(B): 0.95
+    metrics/mAP50(B): 0.98
+    metrics/mAP50-95(B): 0.875
+  best_checkpoint_validation:
+    epoch: 3
+    train/box_loss: 0.383333
+    train/cls_loss: 0.296667
+    train/dfl_loss: 0.233333
+    val/box_loss: 0.42
+    val/cls_loss: 0.323333
+    val/dfl_loss: 0.26
+    metrics/precision(B): 0.96
+    metrics/recall(B): 0.95
+    metrics/mAP50(B): 0.98
+    metrics/mAP50-95(B): 0.875
+deployment:
+  auto_export_onnx: true
+  onnx:
+    status: ready
+    path: weights/yolo26_detect_sample.onnx
+    format: onnx
+    sha256: a0a0eb0e39137e9457f08a9c8524781cd34beedcc23a796ec96a5ef12c55999f
+    file_size_bytes: 4007
+    metadata:
+      uknee.model_name: yolo26-detect-sample
+      uknee.opset: '17'
+      uknee.output: '{"detections":["batch",4,159],"num_detections":["batch"],"canonical":["batch",129,3],"keypoint_format":"x_y_confidence","coordinate_space":"letterboxed_input_pixels"}'
+      uknee.parity: '{"validated":true,"provider":"CPUExecutionProvider","max_abs_diff":0.0}'
+      uknee.preprocess: '{"schema_version":1,"source_spatial_shape":"dynamic","network_input_shape":[1,3,640,640],"image_size_hw":[640,640],"spatial_order":"height_width","onnx_dynamic_axes":{"batch":true,"height":false,"width":false},"layout":"NCHW","dtype":"float32","color_space":"RGB","value_range":[0.0,1.0],"normalization":{"mode":"scale_0_1","mean":[0.0,0.0,0.0],"std":[1.0,1.0,1.0]},"resize":{"mode":"letterbox","keep_aspect_ratio":true,"target_height":640,"target_width":640,"pad_value":114,"placement":"center","stride":32}}'
+      uknee.schema_version: '1'
+      uknee.source_checkpoint: weights/best.pt
+      uknee.task: landmark_detection
+    parity:
+      validated: true
+      provider: CPUExecutionProvider
+      max_abs_diff: 0.0
+artifacts:
+  best_checkpoint: weights/best.pt
+  last_checkpoint: weights/last.pt
+  metrics: results.csv
+  dashboard: detection_dashboard.png
+  metric_report: detection_metrics.png
+  samples: samples/detection_sample_e{epoch}.png
+  samples_per_epoch: 4
+  sample_seed: 2006
+  sample_paths:
+  - 04-091-B.png
+  - 86F4044.png
+  - Knee124.png
+  - Knee44.png
+  sample_output_width: 800
+  onnx_model: weights/yolo26_detect_sample.onnx
