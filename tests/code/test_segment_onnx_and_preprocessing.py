@@ -21,7 +21,13 @@ if str(REPO_ROOT) not in sys.path:
 from segment.dataloader.augment import build_train_transform, build_val_transform
 from segment.dataloader.image_io import read_rgb_image
 from segment.deploy.app_function import predict_mask
-from segment.utils.onnx_export import export_segment_onnx, onnx_filename, read_onnx_metadata
+from segment.utils.onnx_export import (
+    _parity_statistics,
+    _validate_parity_statistics,
+    export_segment_onnx,
+    onnx_filename,
+    read_onnx_metadata,
+)
 from segment.utils.preprocessing import letterbox_array, restore_letterbox_mask
 
 
@@ -42,6 +48,20 @@ class _AlwaysClassTwo(torch.nn.Module):
 
 
 class SegmentONNXAndPreprocessingTests(unittest.TestCase):
+    def test_parity_accepts_small_backend_drift_but_rejects_changed_masks(self):
+        expected = np.zeros((1, 3, 16, 16), dtype=np.float32)
+        expected[:, 0] = 1.0
+        acceptable = expected + 0.005
+        acceptable[0, 0, 0, 0] += 0.075
+        statistics = _parity_statistics(expected, acceptable, num_classes=3)
+        _validate_parity_statistics(statistics)
+        self.assertEqual(statistics["postprocess_agreement"], 1.0)
+
+        changed = expected[:, [1, 0, 2]]
+        changed_statistics = _parity_statistics(expected, changed, num_classes=3)
+        with self.assertRaisesRegex(RuntimeError, "postprocess_agreement"):
+            _validate_parity_statistics(changed_statistics)
+
     def test_onnx_filename_uses_portable_underscores(self):
         self.assertEqual(onnx_filename("RWKV-UNet V6"), "rwkv_unet_v6.onnx")
 
