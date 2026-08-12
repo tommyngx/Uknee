@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import json
 import re
@@ -141,11 +142,12 @@ def export_segment_onnx(
     """Export fixed-canvas logits and verify ONNX Runtime parity."""
     output_path = Path(output_path).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    model = model.module if isinstance(model, nn.DataParallel) else model
-    wrapper = SegmentationONNXWrapper(model)
-    was_training = model.training
-    model.eval()
-    device = next(model.parameters()).device
+    source_model = model.module if isinstance(model, nn.DataParallel) else model
+    # Torch 2.4 can mix CUDA and CPU shape tensors while tracing F.interpolate.
+    # Export an isolated CPU copy so ONNX creation never mutates or interrupts the live trainer.
+    export_model = deepcopy(source_model).float().cpu().eval()
+    wrapper = SegmentationONNXWrapper(export_model)
+    device = torch.device("cpu")
     preprocess = segment_preprocess_schema(args)
     _, channels, height, width = preprocess["network_input_shape"]
     dummy = torch.zeros(1, channels, height, width, dtype=torch.float32, device=device)
@@ -197,7 +199,7 @@ def export_segment_onnx(
         output_path.unlink(missing_ok=True)
         raise
     finally:
-        model.train(was_training)
+        del wrapper, export_model
 
 
 __all__ = [

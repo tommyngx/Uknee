@@ -504,9 +504,15 @@ def _export_best_segment_onnx(args, model, weights_dir, run_dir, class_names, lo
     best_checkpoint_path = weights_dir / "best.pt"
     if not best_checkpoint_path.is_file():
         raise FileNotFoundError(f"Cannot export ONNX because best checkpoint is missing: {best_checkpoint_path}")
+    export_model = model
     if load_best:
-        checkpoint = torch.load(best_checkpoint_path, map_location=device, weights_only=False)
-        _load_model_state_dict(model, checkpoint["state_dict"], logger=logger)
+        checkpoint = torch.load(best_checkpoint_path, map_location="cpu", weights_only=False)
+        export_model = build_model(
+            args,
+            input_channel=args.input_channel,
+            num_classes=args.num_classes,
+        ).cpu()
+        _load_model_state_dict(export_model, checkpoint["state_dict"], logger=logger)
 
     onnx_path = weights_dir / onnx_filename(args.model)
     temporary = onnx_path.with_name(f".{onnx_path.stem}.tmp.onnx")
@@ -514,13 +520,22 @@ def _export_best_segment_onnx(args, model, weights_dir, run_dir, class_names, lo
     logger.info("Updating ONNX from best checkpoint: %s", onnx_path)
     try:
         record = export_segment_onnx(
-            model,
+            export_model,
             args,
             temporary,
             class_names=class_names,
             validate=True,
         )
         temporary.replace(onnx_path)
+    except Exception as exc:
+        logger.exception(
+            "ONNX export failed for best checkpoint; training will continue and retry after the next best epoch."
+        )
+        return {
+            "status": "failed",
+            "path": onnx_path.relative_to(run_dir).as_posix() if onnx_path.is_file() else None,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     finally:
         temporary.unlink(missing_ok=True)
     record["path"] = onnx_path.relative_to(run_dir).as_posix()
@@ -640,6 +655,22 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     training_started = time.time()
     best_epoch = max((int(row["epoch"]) for row in history_rows if row["val/dice"] == best_dice), default=0)
     onnx_record = None
+    if args.resume and (weights_dir / "best.pt").is_file():
+        resume_onnx_path = weights_dir / onnx_filename(args.model)
+        if (
+            not resume_onnx_path.is_file()
+            or resume_onnx_path.stat().st_mtime_ns < (weights_dir / "best.pt").stat().st_mtime_ns
+        ):
+            logger.info("Resume found best.pt without a current ONNX model; exporting it before training continues.")
+            onnx_record = _export_best_segment_onnx(
+                args,
+                model,
+                weights_dir,
+                run_dir,
+                _dataset_class_names(valloader.dataset),
+                logger,
+                load_best=True,
+            )
 
     for epoch_num in range(start_epoch, args.max_epochs):
         epoch_id = epoch_num + 1
@@ -697,6 +728,7 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
                 run_dir,
                 _dataset_class_names(valloader.dataset),
                 logger,
+                load_best=True,
             )
 
         evaluator.save_samples(run_dir / "samples" / f"segment_sample_e{epoch_id}.png", epoch_id)
@@ -729,7 +761,7 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     best_row = next((row for row in history_rows if int(row["epoch"]) == best_epoch), {})
     final_row = history_rows[-1] if history_rows else {}
     preprocess_schema = segment_preprocess_schema(args)
-    if onnx_record is None:
+    if onnx_record is None or onnx_record.get("status") != "ready":
         onnx_record = _export_best_segment_onnx(
             args,
             model,
