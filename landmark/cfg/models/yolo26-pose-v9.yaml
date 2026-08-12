@@ -6,7 +6,7 @@ nc: 4
 end2end: True
 reg_max: 1
 kpt_shape: [51, 3]
-scale: x
+scale: l
 
 # Preserve the four auxiliary losses from posev1; refinement losses below supervise every class instance.
 oa26_loss:
