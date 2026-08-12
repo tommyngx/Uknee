@@ -881,6 +881,20 @@ def _first_output_tensor(value):
     return None
 
 
+def _amp_comparison_tensor(value):
+    """Select a stable pre-top-k tensor when checking AMP on end-to-end detectors."""
+    if isinstance(value, (list, tuple)) and len(value) > 1 and isinstance(value[1], dict):
+        raw = value[1]
+        branch = raw.get("one2one", raw)
+        if isinstance(branch, dict):
+            # Comparing final top-k rows is unstable: tiny FP16 score changes
+            # may change row ordering even when AMP itself is healthy.
+            for key in ("scores", "boxes"):
+                if isinstance(branch.get(key), torch.Tensor):
+                    return branch[key]
+    return _first_output_tensor(value)
+
+
 def check_amp(model, imgsz=640):
     """Check AMP on the actual training model without downloads or unrelated reference weights.
 
@@ -939,9 +953,9 @@ def check_amp(model, imgsz=640):
     try:
         model.eval()
         with torch.no_grad():
-            fp32_output = _first_output_tensor(model(sample))
+            fp32_output = _amp_comparison_tensor(model(sample))
             with autocast(enabled=True):
-                amp_output = _first_output_tensor(model(sample))
+                amp_output = _amp_comparison_tensor(model(sample))
         if fp32_output is None or amp_output is None:
             raise RuntimeError("model forward did not return a tensor")
         if fp32_output.shape != amp_output.shape:
