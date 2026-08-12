@@ -15,6 +15,9 @@ DEFAULT_DEPTHS = (2, 2, 3, 2)
 DEFAULT_EMBED_DIMS = (48, 72, 136, 216)
 DEFAULT_EXP_RATIOS = (2.0, 2.25, 2.5, 2.5)
 DEFAULT_NUM_HEADS = (1, 1, 4, 6)
+# Stage numbers are one-based. Keeping the recurrent matrix-state mixer at the
+# bottleneck avoids retaining its large per-step autograd state at stage 3.
+DEFAULT_MATRIX_STATE_STAGES = (4,)
 
 
 class DynamicLerpV6(nn.Module):
@@ -485,9 +488,8 @@ class RWKV6ChannelMix(nn.Module):
 
     @staticmethod
     def shift_sequence(x: torch.Tensor) -> torch.Tensor:
-        shifted = torch.zeros_like(x)
-        shifted[:, 1:] = x[:, :-1]
-        return shifted
+        return F.pad(x[:, :-1], (0, 0, 1, 0))
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shifted_x = self.shift_sequence(x)
@@ -640,6 +642,7 @@ class RWKV6UNetEncoder(nn.Module):
         embed_dims: Tuple[int, ...] = DEFAULT_EMBED_DIMS,
         exp_ratios: Tuple[float, ...] = DEFAULT_EXP_RATIOS,
         num_heads: Tuple[int, ...] = DEFAULT_NUM_HEADS,
+        matrix_state_stages: Tuple[int, ...] = DEFAULT_MATRIX_STATE_STAGES,
         drop_path_rate: float = 0.1,
     ) -> None:
         super().__init__()
@@ -655,6 +658,15 @@ class RWKV6UNetEncoder(nn.Module):
                 "depths, embed_dims, exp_ratios, and num_heads "
                 "must all contain exactly four values"
             )
+
+        invalid_stages = set(matrix_state_stages) - {1, 2, 3, 4}
+        if invalid_stages:
+            raise ValueError(
+                "matrix_state_stages must only contain stage numbers 1-4, "
+                f"received {sorted(invalid_stages)}"
+            )
+
+        self.matrix_state_stages = tuple(matrix_state_stages)
 
         self.stem = nn.Sequential(
             nn.Conv2d(
@@ -699,7 +711,8 @@ class RWKV6UNetEncoder(nn.Module):
                 stride = 2 if depth_index == 0 else 1
 
                 use_spatial_mix = (
-                    stage_index >= 2 and depth_index > 0
+                    stage_index + 1 in self.matrix_state_stages
+                    and depth_index > 0
                 )
 
                 blocks.append(
@@ -801,8 +814,8 @@ class RWKV_UNetV6(nn.Module):
     Notes:
     - No custom CUDA extension is required.
     - Matrix-valued recurrence is implemented in plain PyTorch.
-    - The recurrent scan is only enabled in deeper encoder stages.
-    - The default configuration is parameter-budgeted to stay below 1.2x V3.
+    - By default, the recurrent scan is restricted to bottleneck stage 4 so
+      training activation memory remains close to V3.
     - Practical input resolution is limited by memory and runtime.
     """
 
@@ -815,6 +828,7 @@ class RWKV_UNetV6(nn.Module):
         embed_dims: Tuple[int, ...] = DEFAULT_EMBED_DIMS,
         exp_ratios: Tuple[float, ...] = DEFAULT_EXP_RATIOS,
         num_heads: Tuple[int, ...] = DEFAULT_NUM_HEADS,
+        matrix_state_stages: Tuple[int, ...] = DEFAULT_MATRIX_STATE_STAGES,
         drop_path_rate: float = 0.1,
     ) -> None:
         super().__init__()
@@ -826,6 +840,7 @@ class RWKV_UNetV6(nn.Module):
             embed_dims=embed_dims,
             exp_ratios=exp_ratios,
             num_heads=num_heads,
+            matrix_state_stages=matrix_state_stages,
             drop_path_rate=drop_path_rate,
         )
 

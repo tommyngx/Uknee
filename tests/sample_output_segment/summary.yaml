@@ -93,7 +93,7 @@ deployment:
     path: weights/rwkv_unetv5.onnx
     format: onnx
     opset: 17
-    sha256: b885b4ae2ab02bf899a367fd35200614eaed7a9cfaafadfeeed0c9eca51ebaf5
+    sha256: d8bc754dab4134c106099d585f3bafa1d48e31d444824808d705ca63eba5124c
     file_size_bytes: 1584
     metadata:
       uknee.schema_version: '1'
