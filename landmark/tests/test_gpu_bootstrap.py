@@ -61,6 +61,17 @@ class GpuBootstrapTests(unittest.TestCase):
         self.assertLess(path_insert, trainer_import)
         self.assertIn(str(REPOSITORY_ROOT), content)
 
+    def test_amp_check_uses_nested_training_output_without_reference_download(self):
+        import torch
+
+        from landmark.core.checks import _first_output_tensor, check_amp
+
+        nested = {"primary": [None, torch.ones(1, 2)]}
+        self.assertIs(_first_output_tensor(nested), nested["primary"][1])
+        model = torch.nn.Conv2d(3, 4, 1)
+        model.stride = torch.tensor([32])
+        self.assertFalse(check_amp(model, imgsz=[64, 96]))  # CPU intentionally disables CUDA AMP
+
 
 if __name__ == "__main__":
     unittest.main()

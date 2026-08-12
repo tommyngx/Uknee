@@ -172,6 +172,10 @@ def main(argv: list[str] | None = None) -> Any:
     train_args["imgsz"] = parse_image_size(train_args.get("imgsz", 640))
     if parsed.get("base_lr") is not None:
         train_args["lr0"] = parsed["base_lr"]
+        # Upstream optimizer=auto silently replaces lr0. An explicit CLI
+        # learning rate must remain authoritative and reproducible.
+        if str(train_args.get("optimizer", "auto")).lower() == "auto":
+            train_args["optimizer"] = "AdamW"
     train_args.pop("base_lr", None)
     train_args.pop("gpu", None)
     train_args.update(overrides)

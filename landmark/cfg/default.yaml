@@ -17,6 +17,7 @@ device:
 workers: 8
 project: runs
 name:
+save_dir:  # runtime-resolved run directory; populated by BaseTrainer
 exist_ok: true
 pretrained: true
 optimizer: auto

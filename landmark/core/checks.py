@@ -866,8 +866,23 @@ def collect_system_info():
     return info_dict
 
 
-def check_amp(model):
-    """Check the PyTorch Automatic Mixed Precision (AMP) functionality of a YOLO model.
+def _first_output_tensor(value):
+    """Return the first tensor from nested model output containers."""
+    if isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, dict):
+        for item in value.values():
+            if (tensor := _first_output_tensor(item)) is not None:
+                return tensor
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            if (tensor := _first_output_tensor(item)) is not None:
+                return tensor
+    return None
+
+
+def check_amp(model, imgsz=640):
+    """Check AMP on the actual training model without downloads or unrelated reference weights.
 
     If the checks fail, it means there are anomalies with AMP on the system that may cause NaN losses or zero-mAP
     results, so AMP will be disabled during training.
@@ -904,38 +919,48 @@ def check_amp(model):
             )
             return False
 
-    def amp_allclose(m, im):
-        """All close FP32 vs AMP results."""
-        batch = [im] * 8
-        imgsz = max(256, int(model.stride.max() * 4))  # max stride P5-32 and P6-64
-        a = m(batch, imgsz=imgsz, device=device, verbose=False)[0].boxes.data  # FP32 inference
-        with autocast(enabled=True):
-            b = m(batch, imgsz=imgsz, device=device, verbose=False)[0].boxes.data  # AMP inference
-        del m
-        return a.shape == b.shape and torch.allclose(a, b.float(), atol=0.5)  # close to 0.5 absolute tolerance
-
-    im = ASSETS / "bus.jpg"  # image to check
     LOGGER.info(f"{prefix}running Automatic Mixed Precision (AMP) checks...")
-    warning_msg = "Setting 'amp=True'. If you experience zero-mAP or NaN losses you can disable AMP with amp=False."
+    height, width = (
+        (int(imgsz[0]), int(imgsz[1]))
+        if isinstance(imgsz, (list, tuple))
+        else (int(imgsz), int(imgsz))
+    )
+    stride = max(int(model.stride.max()) if hasattr(model, "stride") else 32, 32)
+    scale = min(1.0, 256.0 / max(height, width))
+    test_height = max(stride, math.ceil(height * scale / stride) * stride)
+    test_width = max(stride, math.ceil(width * scale / stride) * stride)
+    channels = 3
+    for parameter in model.parameters():
+        if parameter.ndim == 4:
+            channels = int(parameter.shape[1])
+            break
+    sample = torch.zeros(1, channels, test_height, test_width, device=device, dtype=torch.float32)
+    was_training = model.training
     try:
-        from landmark.core.model import YOLO
-
-        assert amp_allclose(YOLO("yolo26n.pt"), im)
+        model.eval()
+        with torch.no_grad():
+            fp32_output = _first_output_tensor(model(sample))
+            with autocast(enabled=True):
+                amp_output = _first_output_tensor(model(sample))
+        if fp32_output is None or amp_output is None:
+            raise RuntimeError("model forward did not return a tensor")
+        if fp32_output.shape != amp_output.shape:
+            raise RuntimeError(f"FP32/AMP output shape mismatch: {fp32_output.shape} vs {amp_output.shape}")
+        if not torch.isfinite(fp32_output).all() or not torch.isfinite(amp_output).all():
+            raise FloatingPointError("non-finite FP32/AMP output")
+        if not torch.allclose(fp32_output.float(), amp_output.float(), rtol=0.1, atol=0.5):
+            raise FloatingPointError("FP32 and AMP outputs differ beyond tolerance")
         LOGGER.info(f"{prefix}checks passed ✅")
-    except ConnectionError:
-        LOGGER.warning(f"{prefix}checks skipped. Offline and unable to download YOLO26n for AMP checks. {warning_msg}")
-    except (AttributeError, ModuleNotFoundError):
+        return True
+    except Exception as error:
         LOGGER.warning(
-            f"{prefix}checks skipped. "
-            f"Unable to load YOLO26n for AMP checks due to possible Ultralytics package modifications. {warning_msg}"
-        )
-    except AssertionError:
-        LOGGER.error(
-            f"{prefix}checks failed. Anomalies were detected with AMP on your system that may lead to "
-            f"NaN losses or zero-mAP results, so AMP will be disabled during training."
+            f"{prefix}checks failed on the training model ({type(error).__name__}: {error}). "
+            "AMP will be disabled for this run."
         )
         return False
-    return True
+    finally:
+        model.train(was_training)
+        del sample
 
 
 def check_multiple_install():

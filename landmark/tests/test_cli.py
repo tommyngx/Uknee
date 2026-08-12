@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 import yaml
 
-from landmark.train import _parse_overrides, build_parser, resolve_model_source
+from landmark.train import _parse_overrides, build_parser, main, resolve_model_source
+from landmark.core.config import get_cfg
 from landmark.utils.api import KneePose
 
 
@@ -48,6 +49,33 @@ class CliTests(unittest.TestCase):
             ):
                 self.assertEqual(pose.train(data=source, epochs=1), "ok")
             self.assertEqual(backend_train.call_args.kwargs["model"], str(model_path))
+
+    def test_validator_accepts_runtime_save_dir(self):
+        args = get_cfg(overrides={"save_dir": "/tmp/uknee-run"})
+        self.assertEqual(args.save_dir, "/tmp/uknee-run")
+
+    def test_explicit_base_lr_is_not_discarded_by_auto_optimizer(self):
+        with TemporaryDirectory() as directory:
+            project = Path(directory)
+            dataset = project / "data" / "pose"
+            dataset.mkdir(parents=True)
+            (dataset / "data.yaml").write_text(
+                yaml.safe_dump({"dataset_name": "pose"}), encoding="utf-8"
+            )
+            with patch("landmark.train.KneePose") as pose_class:
+                pose_class.return_value.train.return_value = "ok"
+                result = main(
+                    [
+                        "--model", "yolo26-pose-v9",
+                        "--project", str(project),
+                        "--dataset", "/pose",
+                        "--base_lr", "0.001",
+                    ]
+                )
+            self.assertEqual(result, "ok")
+            kwargs = pose_class.return_value.train.call_args.kwargs
+            self.assertEqual(kwargs["lr0"], 0.001)
+            self.assertEqual(kwargs["optimizer"], "AdamW")
 
     def test_native_key_value_overrides(self):
         self.assertEqual(
