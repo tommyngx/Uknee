@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uknee-training"
+version = "2.0.0"
+description = "Uknee landmark and medical segmentation training runtimes"
+requires-python = ">=3.10"
+
+[project.scripts]
+uknee-landmark = "landmark.train:main"
+uknee-segment = "segment.main:main"
+
+[tool.setuptools]
+include-package-data = true
+py-modules = ["uknee_cli"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["landmark", "landmark.*", "segment", "segment.*"]
+exclude = ["landmark.tests", "landmark.tests.*"]
+
+[tool.setuptools.package-data]
+landmark = ["cfg/**/*.yaml", "cfg/**/*.yml"]
+segment = ["cfg/**/*.yaml", "cfg/**/*.yml", "models/*.json"]

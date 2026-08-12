@@ -7,6 +7,15 @@ là tên trong `segment.models.MODEL_REGISTRY`. Mỗi lần train lưu vào
 `<project>/runs/<name>` với `weights/`, `samples/`, `args.yaml`, `summary.yaml`
 và ONNX (RWKV_UNetV3/V6).
 
+Để chạy từ notebook hoặc thư mục ngoài repository, cài source một lần bằng
+đúng Python của kernel:
+
+```python
+import sys
+UKNEE_SOURCE = "/path/to/Uknee"
+!{sys.executable} -m pip install --no-deps --no-build-isolation -e "{UKNEE_SOURCE}"
+```
+
 ```bash
 python -m segment.main \
   --model RWKV_UNetV3 \

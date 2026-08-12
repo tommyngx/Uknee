@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 from typing import Any
 
 import yaml
+
+# Support both ``python -m landmark.train`` and an absolute train.py path.
+PACKAGE_ROOT = Path(__file__).resolve().parent
+REPOSITORY_ROOT = PACKAGE_ROOT.parent
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from uknee_cli import (
     first_existing,
@@ -18,11 +25,9 @@ from uknee_cli import (
     safe_run_name,
 )
 
-from .utils.api import KneePose
+from landmark.utils.api import KneePose
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parent
-REPOSITORY_ROOT = PACKAGE_ROOT.parent
 DEFAULT_CFG = PACKAGE_ROOT / "cfg" / "default.yaml"
 MODEL_ROOT = PACKAGE_ROOT / "cfg" / "models"
 

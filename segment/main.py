@@ -106,8 +106,8 @@ def seed_torch(seed):
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
-def parse_arguments():
-    args = parse_segment_args()
+def parse_arguments(argv=None):
+    args = parse_segment_args(argv)
     try:
         from segment.dataloader.dataset_mesko import infer_mesko_num_classes, is_mesko_dataset
 
@@ -120,9 +120,6 @@ def parse_arguments():
         print(f"Could not auto-configure MESKO num_classes: {exc}")
     seed_torch(args.seed)
     return args
-
-
-args = parse_arguments()
 
 
 def _requested_gpu_count(gpu_arg):
@@ -782,9 +779,8 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
 
 
 
-if __name__ == "__main__":
-
-    
+def main(argv=None):
+    args = parse_arguments(argv)
     print(f"\n=== Testing model: {args.model} ===")
     _validate_runtime_config(args)
 
@@ -795,7 +791,7 @@ if __name__ == "__main__":
         validate(args, logger, model)
         if args.zero_shot_dataset_name:
             zero_shot(args, logger, model)
-        raise SystemExit(0)
+        return {"status": "tested", "run_dir": exp_save_dir}
     try:
         train(args, exp_save_dir, log_dir, history_writer, logger, model)
         if args.zero_shot_dataset_name:
@@ -806,4 +802,7 @@ if __name__ == "__main__":
         traceback.print_exc()
         print(f"Model {args.model} failed: {str(e)}")
         raise SystemExit(1)
-    
+
+
+if __name__ == "__main__":
+    main()

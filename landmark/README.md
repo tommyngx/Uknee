@@ -22,6 +22,18 @@ Mọi giá trị truyền từ CLI sẽ ghi đè cấu hình mặc định trong
 `cfg/default.yaml`. Kết quả luôn nằm tại `<project>/runs/<name>`; `weights/`,
 `samples/`, `args.yaml`, `summary.yaml` và ONNX nằm bên trong run đó.
 
+Nếu chạy từ notebook/thư mục ngoài repository, cài source một lần bằng đúng
+Python của kernel:
+
+```python
+import sys
+UKNEE_SOURCE = "/path/to/Uknee"
+!{sys.executable} -m pip install --no-deps --no-build-isolation -e "{UKNEE_SOURCE}"
+```
+
+`--project` là thư mục data/output, không phải source code. Nếu chưa cài
+package thì cần `%cd /path/to/Uknee` trước khi dùng `-m landmark.train`.
+
 ```bash
 python -m landmark.train \
   --model yolo26-pose-v9 \
