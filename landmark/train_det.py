@@ -22,7 +22,15 @@ REPOSITORY_ROOT = PACKAGE_ROOT.parent
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from uknee_cli import gpu_ids_to_device, parse_gpu_ids, parse_image_size, safe_run_name
+from uknee_cli import (
+    first_existing,
+    gpu_ids_to_device,
+    parse_gpu_ids,
+    parse_image_size,
+    resolve_dataset_path,
+    resolve_project_root,
+    safe_run_name,
+)
 
 
 DEFAULT_CFG = PACKAGE_ROOT / "cfg" / "detect" / "kneelocation.yaml"
@@ -53,7 +61,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train an Uknee YOLO knee detector")
     parser.add_argument("--config", default=str(DEFAULT_CFG), help="Base training configuration")
     parser.add_argument("--model", default="yolo26-detect", help="Detection YAML or .pt checkpoint")
-    parser.add_argument("--data", "--dataset", dest="data", default=str(DEFAULT_DATA), help="Detection dataset YAML")
+    parser.add_argument(
+        "--dataset", "--data", "--dataset_path", dest="dataset", default=str(DEFAULT_DATA),
+        help="Detection dataset folder, YAML, absolute path, or /short-name",
+    )
     parser.add_argument("--project", default=str(REPOSITORY_ROOT), help="Output root; runs are written below it")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--imgsz", "--imgz", "--img_size", dest="imgsz", type=parse_image_size, default=None)
@@ -110,6 +121,43 @@ def resolve_model_source(value: str | Path) -> Path:
     if model is None:
         raise FileNotFoundError(f"Detection model {value!r} not found; checked {', '.join(map(str, candidates))}")
     return model.resolve()
+
+
+def resolve_dataset_config(value: str | Path, project_root: str | Path) -> Path:
+    """Resolve a YAML or make a portable runtime YAML for a detection dataset folder or path."""
+    dataset_path = resolve_dataset_path(value, project_root, must_exist=True)
+    if dataset_path.is_file():
+        if dataset_path.suffix.lower() not in {".yaml", ".yml"}:
+            raise ValueError(f"Detection dataset config must be YAML: {dataset_path}")
+        return dataset_path
+
+    preferred = [
+        dataset_path / "data.yaml",
+        dataset_path / "dataset.yaml",
+        dataset_path / f"{dataset_path.name}.yaml",
+    ]
+    source_yaml = first_existing(preferred) or first_existing(sorted(dataset_path.glob("*.y*ml")))
+    if source_yaml:
+        metadata = yaml.safe_load(source_yaml.read_text(encoding="utf-8")) or {}
+        if not isinstance(metadata, dict):
+            raise TypeError(f"Expected a YAML mapping in {source_yaml}")
+    else:
+        metadata = {
+            "dataset_name": dataset_path.name,
+            "train": "images/train",
+            "val": "images/val" if (dataset_path / "images" / "val").is_dir() else "images/train",
+            "test": "images/val" if (dataset_path / "images" / "val").is_dir() else "images/train",
+            "channels": 3,
+            "names": {0: "right_knee", 1: "left_knee"},
+            "val_fraction": 0.15,
+            "split_seed": 2026,
+        }
+    metadata["path"] = str(dataset_path.resolve())
+    runtime_root = Path(project_root).resolve() / ".uknee" / "datasets"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    runtime_yaml = runtime_root / f"{safe_run_name(dataset_path.name)}_detection.yaml"
+    runtime_yaml.write_text(yaml.safe_dump(metadata, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return runtime_yaml
 
 
 def _dataset_root(source_yaml: Path, configured: str | Path | None) -> Path:
@@ -626,7 +674,8 @@ def main(argv: list[str] | None = None) -> Any:
     parsed = vars(build_parser().parse_args(argv))
     project = Path(parsed.pop("project")).expanduser().resolve()
     model_path = resolve_model_source(parsed.pop("model"))
-    dataset_yaml, audit = prepare_detection_dataset(parsed.pop("data"), project)
+    dataset_source = resolve_dataset_config(parsed.pop("dataset"), project)
+    dataset_yaml, audit = prepare_detection_dataset(dataset_source, project)
     overrides = _parse_overrides(parsed.pop("overrides"))
     config = {**_xray_detection_defaults(), **_load_yaml(parsed.pop("config"))}
     for key in ("task", "mode", "model", "data", "source", "save_dir"):

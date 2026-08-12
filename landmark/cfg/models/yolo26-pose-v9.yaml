@@ -6,7 +6,7 @@ nc: 4
 end2end: True
 reg_max: 1
 kpt_shape: [51, 3]
-scale: m
+scale: l
 
 # Learn reliable femur/tibia/fibula/patella boxes first. Landmark-specific
 # losses then ramp in gradually instead of competing with detection at start.
