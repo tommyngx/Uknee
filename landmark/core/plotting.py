@@ -16,6 +16,7 @@ from PIL import __version__ as pil_version
 from landmark.core import IS_COLAB, IS_KAGGLE, LOGGER, TryExcept, ops, plt_settings, threaded
 from landmark.core.checks import check_font, check_version, is_ascii
 from landmark.core.files import increment_path
+from uknee_plotting import apply_robust_y_limit
 
 
 def _gaussian_filter1d(y, sigma: int = 3, truncate: float = 4.0) -> np.ndarray:
@@ -1284,7 +1285,8 @@ def plot_dashboard_pose(
     ax1.set_title("Training & Validation Loss", fontsize=12, fontweight="bold", color="#1e293b")
     ax1.set_xlabel("Epochs", fontsize=10, color="black")
     ax1.set_ylabel("Loss", fontsize=10, color="black", fontweight="semibold")
-    ax1.set_ylim(bottom=-0.005)
+    loss_series = [values[key] for key in ("train/loss", "val/loss") if key in values]
+    apply_robust_y_limit(ax1, loss_series, epochs=epochs, lower_bound=-0.005)
     leg1 = ax1.legend(loc="upper right", frameon=True, facecolor="white", edgecolor="#cbd5e1", fontsize=9.0)
     if leg1:
         leg1.get_frame().set_alpha(0.96)
@@ -1327,7 +1329,13 @@ def plot_dashboard_pose(
                   fontsize=12, fontweight="bold", color="#1e293b")
     ax2.set_xlabel("Epochs", fontsize=10, color="black")
     ax2.set_ylabel("MRE Error (mm)", fontsize=10, color=c_red, fontweight="semibold")
-    ax2.set_ylim(bottom=-0.05)
+    apply_robust_y_limit(
+        ax2,
+        [mre_mm] if "metrics/MRE" in values else [],
+        epochs=epochs,
+        lower_bound=-0.05,
+        annotation_position=(0.55, 0.98),
+    )
 
     handles_l2, labels_l2 = ax2.get_legend_handles_labels()
     if has_bbox_map:
@@ -1348,9 +1356,11 @@ def plot_dashboard_pose(
                    ("metrics/MRE_tibia", "Tibia", c_red),
                    ("metrics/MRE_fibula", "Fibula", c_green),
                    ("metrics/MRE_patella", "Patella", c_purple)]
+    region_mre_series = []
     for col, name, color in region_cols:
         if col in values:
             r_mm = values[col] * pixel_spacing
+            region_mre_series.append(r_mm)
             best_val = r_mm[best_mre_idx] if len(r_mm) > best_mre_idx else r_mm[-1]
             ax3.plot(epochs, r_mm, label=f"{name}: {best_val:.4f} mm", color=color, lw=2.0)
 
@@ -1361,7 +1371,7 @@ def plot_dashboard_pose(
     ax3.set_title("Per-Region MRE (Femur, Tibia, Fibula, Patella in mm)", fontsize=12, fontweight="bold", color="#1e293b")
     ax3.set_xlabel("Epochs", fontsize=10, color="black")
     ax3.set_ylabel("Error (mm)", fontsize=10, color="black", fontweight="semibold")
-    ax3.set_ylim(bottom=-0.05)
+    apply_robust_y_limit(ax3, region_mre_series, epochs=epochs, lower_bound=-0.05)
     leg3 = ax3.legend(loc="upper right", frameon=True, facecolor="white", edgecolor="#cbd5e1", fontsize=8.8)
     if leg3:
         leg3.get_frame().set_alpha(0.96)
@@ -1402,7 +1412,13 @@ def plot_dashboard_pose(
                        color="#f87171", markeredgecolor="#991b1b", markeredgewidth=1.2,
                        label=f"Best HD95: {best_hd95_val:.4f} mm (E{best_hd95_ep})", zorder=5)
         ax4_right.set_ylabel("HD95 (mm)", fontsize=10, color=c_red, fontweight="semibold")
-        ax4_right.set_ylim(bottom=-0.05)
+        apply_robust_y_limit(
+            ax4_right,
+            [hd95_vals],
+            epochs=epochs,
+            lower_bound=-0.05,
+            annotation_position=(0.55, 0.98),
+        )
 
     ax4.set_title("PCK Accuracy" + (" & Hausdorff Distance (HD95)" if has_hd95 else ""),
                   fontsize=12, fontweight="bold", color="#1e293b")

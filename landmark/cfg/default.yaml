@@ -7,9 +7,9 @@ data:
 # Train
 epochs: 100
 time:
-patience: 100
+patience: 300
 batch: 16
-imgsz: [640, 640]  # [height, width]
+imgsz: [640, 512]  # [height, width]
 save: true
 save_period: -1
 cache: false
@@ -22,7 +22,7 @@ exist_ok: true
 pretrained: true
 optimizer: auto
 verbose: true
-seed: 2006
+seed: 2026
 deterministic: true
 single_cls: false
 rect: false

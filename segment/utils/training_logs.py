@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from uknee_plotting import apply_robust_y_limit
+
 
 def to_python_number(value):
     if hasattr(value, "detach"):
@@ -279,7 +281,12 @@ def plot_training_dashboard(
     ax1.set_title("Training & Validation Loss", fontsize=12, fontweight="bold", color="#1e293b", pad=8)
     ax1.set_xlabel("Epochs", fontsize=10, color="black")
     ax1.set_ylabel("Loss", fontsize=10, color="black", fontweight="semibold")
-    ax1.set_ylim(bottom=-0.005)
+    apply_robust_y_limit(
+        ax1,
+        loss_series.values(),
+        epochs=epochs,
+        lower_bound=-0.005,
+    )
     leg1 = ax1.legend(loc="upper right", frameon=True, facecolor="white", edgecolor="#cbd5e1", fontsize=9.0)
     if leg1:
         leg1.get_frame().set_alpha(0.96)
@@ -356,8 +363,20 @@ def plot_training_dashboard(
     ax3.set_xlabel("Epochs", fontsize=10, color="black")
     ax3.set_ylabel("HD95 (mm)", fontsize=10, color=c_red, fontweight="semibold")
     ax3_right.set_ylabel("ASSD (mm)", fontsize=10, color=c_purple, fontweight="semibold")
-    ax3.set_ylim(bottom=-0.1)
-    ax3_right.set_ylim(bottom=-0.05)
+    apply_robust_y_limit(
+        ax3,
+        [hd95_vals],
+        epochs=epochs,
+        lower_bound=-0.1,
+        annotation_position=(0.02, 0.98),
+    )
+    apply_robust_y_limit(
+        ax3_right,
+        [assd_vals],
+        epochs=epochs,
+        lower_bound=-0.05,
+        annotation_position=(0.02, 0.78),
+    )
 
     h_l3, l_l3 = ax3.get_legend_handles_labels()
     h_r3, l_r3 = ax3_right.get_legend_handles_labels()
