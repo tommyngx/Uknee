@@ -1195,6 +1195,36 @@ def _read_csv(path: Path) -> dict[str, np.ndarray]:
     }
 
 
+def _training_report_title(
+    report_name: str,
+    model_name: str | None,
+    elapsed_seconds: float | None,
+    epochs_completed: int | None,
+) -> str:
+    """Build one stable report title including total train time and time/epoch."""
+    title = f"{report_name}: {model_name or 'landmark-model'}"
+    if elapsed_seconds is None or elapsed_seconds <= 0:
+        return title
+    elapsed = float(elapsed_seconds)
+    hours, remainder = divmod(int(round(elapsed)), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    duration = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
+    epochs = max(int(epochs_completed or 0), 1)
+    return f"{title} | Train Time: {duration} | Time/Epoch: {elapsed / epochs:.1f}s"
+
+
+def _resize_png_to_width(path: Path, width: int = 800) -> Path:
+    """Down/up-scale a PNG to an exact width while preserving its aspect ratio."""
+    from PIL import Image
+
+    with Image.open(path) as source:
+        target_width = int(width)
+        target_height = max(1, round(source.height * target_width / source.width))
+        resized = source.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        resized.save(path, format="PNG", optimize=True, compress_level=6)
+    return path
+
+
 def plot_dashboard_pose(
     csv_file: str | Path,
     output_png: str | Path | None = None,
@@ -1230,14 +1260,8 @@ def plot_dashboard_pose(
 
     # Title formatting
     m_name = model_name or csv_path.parent.name or "yolo26-pose-v1"
-    time_info = ""
-    if elapsed_seconds and elapsed_seconds > 0:
-        mins = int(elapsed_seconds // 60)
-        secs = int(elapsed_seconds % 60)
-        avg_ep = elapsed_seconds / max(1, len(epochs))
-        time_info = f" | Train Time: {mins}m {secs}s ({avg_ep:.1f}s/ep)"
-
-    fig.suptitle(f"Landmark: {m_name}{time_info}", color="#1e293b", fontsize=14, fontweight="bold", y=0.98)
+    title = _training_report_title("Landmark Dashboard", m_name, elapsed_seconds, len(epochs))
+    fig.suptitle(title, color="#1e293b", fontsize=14, fontweight="bold", y=0.985)
 
     # Subplot 1: Train & Val Loss + Top 1, 2, 3 Val Loss Markers
     ax1 = axes[0, 0]
@@ -1398,7 +1422,7 @@ def plot_dashboard_pose(
         leg4.get_frame().set_alpha(0.96)
         leg4.set_zorder(100)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     destination.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(destination, bbox_inches="tight")
     plt.close(fig)
@@ -1410,10 +1434,24 @@ def _mean_curve(curve: Any) -> np.ndarray:
     return np.nanmean(array, axis=0) if array.ndim > 1 else array
 
 
-def plot_pose_metrics(metrics: Any, output_png: str | Path) -> Path:
+def plot_pose_metrics(
+    metrics: Any,
+    output_png: str | Path,
+    *,
+    model_name: str | None = None,
+    elapsed_seconds: float | None = None,
+    epochs_completed: int | None = None,
+) -> Path:
     """Write normalized confusion, pose/box PR, and F1-confidence in one figure."""
     destination = Path(output_png)
     fig, axes = plt.subplots(2, 2, figsize=(12, 10), dpi=150)
+    fig.suptitle(
+        _training_report_title("Landmark Metrics", model_name, elapsed_seconds, epochs_completed),
+        color="#1e293b",
+        fontsize=14,
+        fontweight="bold",
+        y=0.985,
+    )
     raw_matrix = np.asarray(metrics.confusion_matrix.matrix, dtype=float)[:4, :4]
     norm_matrix = raw_matrix / np.maximum(raw_matrix.sum(axis=0, keepdims=True), 1e-9)
     gt_counts = raw_matrix.sum(axis=0).astype(int)
@@ -1480,7 +1518,7 @@ def plot_pose_metrics(metrics: Any, output_png: str | Path) -> Path:
     ax.legend(fontsize=8)
     _style(ax)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     destination.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(destination, bbox_inches="tight")
     plt.close(fig)
@@ -1539,7 +1577,7 @@ def plot_validation_samples(records: list[dict[str, Any]], output_png: str | Pat
     destination.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(destination, bbox_inches="tight")
     plt.close(fig)
-    return destination
+    return _resize_png_to_width(destination, width=800)
 
 
 __all__ = ["plot_dashboard_pose", "plot_pose_metrics", "plot_validation_samples"]

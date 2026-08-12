@@ -162,7 +162,13 @@ def generate_sample_output(output_dir: Path | None = None) -> Path:
         pose=_Metric(),
         box=_Metric(),
     )
-    plot_pose_metrics(metrics, output_dir / "landmark_metrics.png")
+    plot_pose_metrics(
+        metrics,
+        output_dir / "landmark_metrics.png",
+        model_name="yolo26-pose-sample",
+        elapsed_seconds=48.0,
+        epochs_completed=SAMPLE_EPOCHS,
+    )
     plot_validation_samples(epoch_records, output_dir / "landmark_samples.png", epoch=SAMPLE_EPOCHS)
 
     args = {
@@ -235,6 +241,7 @@ def generate_sample_output(output_dir: Path | None = None) -> Path:
             "metric_report": "landmark_metrics.png",
             "samples": "samples/landmark_sample_e{epoch}.png",
             "samples_per_epoch": 4, "sample_seed": SAMPLE_SEED, "sample_paths": sample_paths,
+            "sample_output_width": 800,
             "onnx_model": onnx_record["path"],
         },
     }

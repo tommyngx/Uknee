@@ -168,7 +168,16 @@ class FlatPoseTrainerMixin:
             if write_header:
                 writer.writeheader()
             writer.writerow(row)
-        plot_dashboard_pose(self.csv, self.save_dir / "landmark_dashboard.png", pixel_spacing=PIXEL_SPACING_MM)
+        elapsed_seconds = self._prior_training_duration_seconds + max(
+            time.time() - getattr(self, "train_time_start", time.time()), 0.0
+        )
+        plot_dashboard_pose(
+            self.csv,
+            self.save_dir / "landmark_dashboard.png",
+            pixel_spacing=PIXEL_SPACING_MM,
+            model_name=Path(self._resolved_model_source()).stem,
+            elapsed_seconds=elapsed_seconds,
+        )
 
     @staticmethod
     def _onnx_name(model_source: str) -> str:
@@ -210,21 +219,36 @@ class FlatPoseTrainerMixin:
 
         model_source = self._resolved_model_source()
         destination = self.wdir / self._onnx_name(model_source)
+        temporary = destination.with_name(f".{destination.stem}.tmp.onnx")
         from landmark.utils.api import KneePose
 
-        exported = KneePose(self.best).export(
-            format="onnx",
-            imgsz=getattr(self.args, "imgsz", 640),
-            batch=1,
-            dynamic=True,
-            simplify=False,
-            path=destination,
-            model_name=Path(model_source).stem,
-            source_checkpoint="weights/best.pt",
-        )
-        if Path(exported) != destination or not destination.is_file():
-            raise RuntimeError(f"Unexpected ONNX export destination: expected={destination}, actual={exported}")
+        temporary.unlink(missing_ok=True)
+        try:
+            exported = KneePose(self.best).export(
+                format="onnx",
+                imgsz=getattr(self.args, "imgsz", 640),
+                batch=1,
+                dynamic=True,
+                simplify=False,
+                path=temporary,
+                model_name=Path(model_source).stem,
+                source_checkpoint="weights/best.pt",
+            )
+            if Path(exported) != temporary or not temporary.is_file():
+                raise RuntimeError(f"Unexpected ONNX export destination: expected={temporary}, actual={exported}")
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
         return self._existing_onnx_record(model_source)
+
+    def save_model(self):
+        """Save checkpoints and refresh ONNX immediately whenever best.pt changes."""
+        best_updated = self.best_fitness == self.fitness
+        saved = super().save_model()
+        if saved and best_updated and RANK in {-1, 0}:
+            LOGGER.info("New best checkpoint saved; updating ONNX deployment model...")
+            self._onnx_export_record = self._export_best_onnx()
+        return saved
 
     def _write_summary(self) -> Path:
         rows: list[dict[str, Any]] = []
@@ -324,6 +348,7 @@ class FlatPoseTrainerMixin:
                 "samples_per_epoch": len(sample_paths) if sample_paths else 4,
                 "sample_seed": 2006,
                 "sample_paths": list(sample_paths),
+                "sample_output_width": 800,
                 "onnx_model": onnx_record.get("path"),
             },
         }
@@ -335,9 +360,23 @@ class FlatPoseTrainerMixin:
         self._training_duration_seconds = self._prior_training_duration_seconds + max(
             time.time() - getattr(self, "train_time_start", time.time()), 0.0
         )
+        if getattr(self, "validator", None) is not None:
+            self.validator._report_model_name = Path(self._resolved_model_source()).stem
+            self.validator._report_elapsed_seconds = self._training_duration_seconds
+            self.validator._report_epochs_completed = max(int(self.epoch) + 1, 1)
         super().final_eval()
         if RANK in {-1, 0}:
-            self._onnx_export_record = self._export_best_onnx()
+            model_source = self._resolved_model_source()
+            existing = self._existing_onnx_record(model_source)
+            onnx_path = self.wdir / self._onnx_name(model_source)
+            if (
+                existing.get("status") == "ready"
+                and self.best.is_file()
+                and onnx_path.stat().st_mtime_ns >= self.best.stat().st_mtime_ns
+            ):
+                self._onnx_export_record = existing
+            else:
+                self._onnx_export_record = self._export_best_onnx()
             self._write_summary()
 
 
@@ -394,9 +433,18 @@ class KneePoseValidator(PoseValidator):
         self._sample_records: dict[str, dict[str, Any]] = {}
         self._sample_paths: list[str] = []
         self.current_epoch = 0
+        self._report_model_name = Path(str(getattr(self.args, "model", "landmark-model"))).stem
+        self._report_elapsed_seconds: float | None = None
+        self._report_epochs_completed: int | None = None
 
     def __call__(self, trainer=None, model=None):
         self.current_epoch = trainer.epoch + 1 if trainer is not None else 0
+        if trainer is not None:
+            self._report_model_name = Path(trainer._resolved_model_source()).stem
+            self._report_elapsed_seconds = trainer._prior_training_duration_seconds + max(
+                time.time() - getattr(trainer, "train_time_start", time.time()), 0.0
+            )
+            self._report_epochs_completed = self.current_epoch
         return super().__call__(trainer=trainer, model=model)
 
     def init_metrics(self, model: torch.nn.Module) -> None:
@@ -565,12 +613,19 @@ class KneePoseValidator(PoseValidator):
         super().finalize_metrics()
         if RANK not in {-1, 0}:
             return
-        plot_pose_metrics(self.metrics, Path(self.save_dir) / "landmark_metrics.png")
+        plot_pose_metrics(
+            self.metrics,
+            Path(self.save_dir) / "landmark_metrics.png",
+            model_name=self._report_model_name,
+            elapsed_seconds=self._report_elapsed_seconds,
+            epochs_completed=self._report_epochs_completed,
+        )
         if self.current_epoch > 0:
             ordered = [self._sample_records[path] for path in self._sample_paths if path in self._sample_records]
             plot_validation_samples(
                 ordered,
                 Path(self.save_dir) / "samples" / f"landmark_sample_e{self.current_epoch}.png",
+                epoch=self.current_epoch,
             )
 
     def print_results(self) -> None:

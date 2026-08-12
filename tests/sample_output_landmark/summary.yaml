@@ -122,14 +122,14 @@ deployment:
     status: ready
     path: weights/yolo26_pose_sample.onnx
     format: onnx
-    sha256: 936f341a005e0eac416faf6dfaacc30d0ed189147a9ba4b2deb5a50d075705a7
-    file_size_bytes: 3949
+    sha256: bee18afecc56b392acdc8a8e82ac26c5d3ed1df62fbb9ef1d3c1f9d227cbdcda
+    file_size_bytes: 4006
     metadata:
       uknee.model_name: yolo26-pose-sample
       uknee.opset: '17'
       uknee.output: '{"detections":["batch",4,159],"num_detections":["batch"],"canonical":["batch",129,3],"keypoint_format":"x_y_confidence","coordinate_space":"letterboxed_input_pixels"}'
       uknee.parity: '{"validated":true,"provider":"CPUExecutionProvider","max_abs_diff":0.0}'
-      uknee.preprocess: '{"schema_version":1,"source_spatial_shape":"dynamic","network_input_shape":[1,3,512,320],"onnx_dynamic_axes":{"batch":true,"height":false,"width":false},"layout":"NCHW","dtype":"float32","color_space":"RGB","value_range":[0.0,1.0],"normalization":{"mode":"scale_0_1","mean":[0.0,0.0,0.0],"std":[1.0,1.0,1.0]},"resize":{"mode":"letterbox","keep_aspect_ratio":true,"target_height":512,"target_width":320,"pad_value":114,"placement":"center","stride":32}}'
+      uknee.preprocess: '{"schema_version":1,"source_spatial_shape":"dynamic","network_input_shape":[1,3,512,320],"image_size_hw":[512,320],"spatial_order":"height_width","onnx_dynamic_axes":{"batch":true,"height":false,"width":false},"layout":"NCHW","dtype":"float32","color_space":"RGB","value_range":[0.0,1.0],"normalization":{"mode":"scale_0_1","mean":[0.0,0.0,0.0],"std":[1.0,1.0,1.0]},"resize":{"mode":"letterbox","keep_aspect_ratio":true,"target_height":512,"target_width":320,"pad_value":114,"placement":"center","stride":32}}'
       uknee.schema_version: '1'
       uknee.source_checkpoint: weights/best.pt
       uknee.task: landmark_detection
@@ -151,4 +151,5 @@ artifacts:
   - 05-034-B_LFlip.png
   - 05-052-B_L.png
   - 08-162-B_LFlip.png
+  sample_output_width: 800
   onnx_model: weights/yolo26_pose_sample.onnx

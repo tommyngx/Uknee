@@ -3,6 +3,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 # Ensure the repository root and segment package are importable.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -12,6 +14,7 @@ for p in (str(REPO_ROOT),):
 
 import numpy as np
 import torch
+from PIL import Image
 
 from segment.utils.segment_reporting import (
     SegmentationEvaluator,
@@ -25,6 +28,7 @@ from segment.utils.training_logs import (
     save_summary_yaml,
     save_training_args,
 )
+from segment.main import _export_best_segment_onnx
 
 
 RESULT_COLUMNS = [
@@ -34,6 +38,32 @@ RESULT_COLUMNS = [
 
 
 class SegmentReportingTests(unittest.TestCase):
+    def test_best_checkpoint_refreshes_onnx_atomically(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            weights_dir = run_dir / "weights"
+            weights_dir.mkdir()
+            (weights_dir / "best.pt").write_bytes(b"best")
+            args = SimpleNamespace(auto_export_onnx=True, model="RWKV_UNetV3")
+
+            def fake_export(_model, _args, output_path, **_kwargs):
+                Path(output_path).write_bytes(b"new-onnx")
+                return {"status": "ready", "parity": {"max_abs_diff": 0.0}}
+
+            with patch("segment.main.export_segment_onnx", side_effect=fake_export) as export:
+                record = _export_best_segment_onnx(
+                    args,
+                    torch.nn.Conv2d(3, 2, 1),
+                    weights_dir,
+                    run_dir,
+                    ["Background", "Bone"],
+                    MagicMock(),
+                )
+            destination = weights_dir / "rwkv_unetv3.onnx"
+            self.assertEqual(destination.read_bytes(), b"new-onnx")
+            self.assertEqual(record["path"], "weights/rwkv_unetv3.onnx")
+            export.assert_called_once()
+
     def test_sample_display_preserves_aspect_ratio(self):
         image = np.zeros((200, 100, 3), dtype=np.uint8)
         target = np.zeros((200, 100), dtype=np.uint8)
@@ -66,6 +96,8 @@ class SegmentReportingTests(unittest.TestCase):
             evaluator.save_samples(tmp_path / "samples" / "segment_sample_e1.png", epoch=1)
             self.assertTrue((tmp_path / "segment_metrics.png").is_file())
             self.assertTrue((tmp_path / "samples" / "segment_sample_e1.png").is_file())
+            with Image.open(tmp_path / "samples" / "segment_sample_e1.png") as sample:
+                self.assertEqual(sample.width, 800)
 
     def test_multiclass_region_metrics_and_fixed_samples_are_deterministic(self):
         target = torch.zeros(1, 8, 8, dtype=torch.long)

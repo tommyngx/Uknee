@@ -6,12 +6,14 @@ import unittest
 from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
 import yaml
+from PIL import Image
 
-from landmark.core.plotting import plot_pose_metrics, plot_validation_samples
+from landmark.core.plotting import _training_report_title, plot_pose_metrics, plot_validation_samples
 from landmark.utils.validation import FlatPoseTrainerMixin, RESULT_COLUMNS
 
 
@@ -37,6 +39,12 @@ class _BaseTrainer:
     def validate(self):
         self.best_fitness = 999.0  # emulate upstream mAP fitness mutation
         return dict(self.metrics_for_validation), 999.0
+
+    def save_model(self):
+        self.last.write_bytes(b"last")
+        if self.best_fitness == self.fitness:
+            self.best.write_bytes(b"best")
+        return True
 
 
 class _Trainer(FlatPoseTrainerMixin, _BaseTrainer):
@@ -118,6 +126,26 @@ class ReportingTests(unittest.TestCase):
             output = plot_validation_samples(records, root / "samples" / "landmark_sample_e1.png")
             self.assertIsNotNone(output)
             self.assertTrue(output.is_file())
+            with Image.open(output) as image:
+                self.assertEqual(image.width, 800)
+
+    def test_report_title_keeps_total_time_and_time_per_epoch(self):
+        title = _training_report_title("Landmark Dashboard", "pose-v9", 125.0, 5)
+        self.assertEqual(
+            title,
+            "Landmark Dashboard: pose-v9 | Train Time: 2m 5s | Time/Epoch: 25.0s",
+        )
+
+    def test_onnx_is_refreshed_immediately_when_best_checkpoint_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = _Trainer(Path(directory))
+            trainer.fitness = trainer.best_fitness = -1.25
+            record = {"status": "ready", "path": "weights/pose.onnx"}
+            with patch.object(trainer, "_export_best_onnx", return_value=record) as export:
+                self.assertTrue(trainer.save_model())
+            self.assertTrue(trainer.best.is_file())
+            export.assert_called_once_with()
+            self.assertEqual(trainer._onnx_export_record, record)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,19 @@ def _resize_sample_for_display(image, target, prediction, fixed_height=512):
     return image, target, prediction
 
 
+def _resize_png_to_width(path, width=800):
+    """Resize the final report PNG to an exact width while preserving its aspect ratio."""
+    from PIL import Image
+
+    path = Path(path)
+    with Image.open(path) as source:
+        target_width = int(width)
+        target_height = max(1, round(source.height * target_width / source.width))
+        resized = source.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        resized.save(path, format="PNG", optimize=True, compress_level=6)
+    return path
+
+
 @dataclass
 class ValidationSnapshot:
     dice: float
@@ -325,7 +338,7 @@ class SegmentationEvaluator:
         fig.tight_layout(rect=(0, 0.055, 1, 0.945))
         fig.savefig(output_path, bbox_inches="tight")
         plt.close(fig)
-        return output_path
+        return _resize_png_to_width(output_path, width=800)
 
 def plot_segmentation_metrics(snapshot, output_path):
     """Write the required four-panel segmentation evaluation report."""

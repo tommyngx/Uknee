@@ -21,6 +21,7 @@ artifact = model.export(format="onnx", imgsz=640)
 Mọi giá trị truyền từ CLI sẽ ghi đè cấu hình mặc định trong
 `cfg/default.yaml`. Kết quả luôn nằm tại `<project>/runs/<name>`; `weights/`,
 `samples/`, `args.yaml`, `summary.yaml` và ONNX nằm bên trong run đó.
+Mỗi khi `weights/best.pt` được cập nhật, ONNX tương ứng cũng được export và thay thế ngay; ảnh sample có chiều rộng 800 px và giữ nguyên tỷ lệ.
 
 Nếu chạy từ notebook/thư mục ngoài repository, cài source một lần bằng đúng
 Python của kernel:

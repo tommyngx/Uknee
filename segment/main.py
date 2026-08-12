@@ -484,6 +484,54 @@ def _dataset_class_names(dataset):
     return None
 
 
+def _export_best_segment_onnx(args, model, weights_dir, run_dir, class_names, logger, *, load_best=False):
+    """Atomically refresh the deployment ONNX from the current best checkpoint."""
+    if not args.auto_export_onnx:
+        return {"status": "disabled", "path": None}
+    if args.model not in SUPPORTED_AUTO_EXPORT_MODELS:
+        record = {
+            "status": "not_supported",
+            "path": None,
+            "supported_models": sorted(SUPPORTED_AUTO_EXPORT_MODELS),
+        }
+        logger.info(
+            "Automatic ONNX export is currently scoped to %s; skipping model %s.",
+            record["supported_models"],
+            args.model,
+        )
+        return record
+
+    best_checkpoint_path = weights_dir / "best.pt"
+    if not best_checkpoint_path.is_file():
+        raise FileNotFoundError(f"Cannot export ONNX because best checkpoint is missing: {best_checkpoint_path}")
+    if load_best:
+        checkpoint = torch.load(best_checkpoint_path, map_location=device, weights_only=False)
+        _load_model_state_dict(model, checkpoint["state_dict"], logger=logger)
+
+    onnx_path = weights_dir / onnx_filename(args.model)
+    temporary = onnx_path.with_name(f".{onnx_path.stem}.tmp.onnx")
+    temporary.unlink(missing_ok=True)
+    logger.info("Updating ONNX from best checkpoint: %s", onnx_path)
+    try:
+        record = export_segment_onnx(
+            model,
+            args,
+            temporary,
+            class_names=class_names,
+            validate=True,
+        )
+        temporary.replace(onnx_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    record["path"] = onnx_path.relative_to(run_dir).as_posix()
+    logger.info(
+        "ONNX export ready: %s (max_abs_diff=%s)",
+        onnx_path,
+        record["parity"]["max_abs_diff"],
+    )
+    return record
+
+
 def _validate_epoch(args, model, valloader, criterion, sample_indices=()):
     val_loss = AverageMeter()
     evaluator = SegmentationEvaluator(
@@ -591,6 +639,7 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     previous_duration = float(previous_summary.get("training", {}).get("duration_seconds", 0.0) or 0.0)
     training_started = time.time()
     best_epoch = max((int(row["epoch"]) for row in history_rows if row["val/dice"] == best_dice), default=0)
+    onnx_record = None
 
     for epoch_num in range(start_epoch, args.max_epochs):
         epoch_id = epoch_num + 1
@@ -641,6 +690,14 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
             best_dice = snapshot.dice
             best_epoch = epoch_id
             _save_checkpoint(weights_dir / "best.pt", args, model, optimizer, epoch_id, best_dice, epoch_row)
+            onnx_record = _export_best_segment_onnx(
+                args,
+                model,
+                weights_dir,
+                run_dir,
+                _dataset_class_names(valloader.dataset),
+                logger,
+            )
 
         evaluator.save_samples(run_dir / "samples" / f"segment_sample_e{epoch_id}.png", epoch_id)
         plot_segmentation_metrics(snapshot, run_dir / "segment_metrics.png")
@@ -672,39 +729,15 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     best_row = next((row for row in history_rows if int(row["epoch"]) == best_epoch), {})
     final_row = history_rows[-1] if history_rows else {}
     preprocess_schema = segment_preprocess_schema(args)
-    if not args.auto_export_onnx:
-        onnx_record = {"status": "disabled", "path": None}
-    elif args.model not in SUPPORTED_AUTO_EXPORT_MODELS:
-        onnx_record = {
-            "status": "not_supported",
-            "path": None,
-            "supported_models": sorted(SUPPORTED_AUTO_EXPORT_MODELS),
-        }
-        logger.info(
-            "Automatic ONNX export is currently scoped to %s; skipping model %s.",
-            sorted(SUPPORTED_AUTO_EXPORT_MODELS),
-            args.model,
-        )
-    else:
-        best_checkpoint_path = weights_dir / "best.pt"
-        if not best_checkpoint_path.is_file():
-            raise FileNotFoundError(f"Cannot export ONNX because best checkpoint is missing: {best_checkpoint_path}")
-        checkpoint = torch.load(best_checkpoint_path, map_location=device, weights_only=False)
-        _load_model_state_dict(model, checkpoint["state_dict"], logger=logger)
-        onnx_path = weights_dir / onnx_filename(args.model)
-        logger.info("Exporting best checkpoint to ONNX: %s", onnx_path)
-        onnx_record = export_segment_onnx(
-            model,
+    if onnx_record is None:
+        onnx_record = _export_best_segment_onnx(
             args,
-            onnx_path,
-            class_names=_dataset_class_names(valloader.dataset),
-            validate=True,
-        )
-        onnx_record["path"] = onnx_path.relative_to(run_dir).as_posix()
-        logger.info(
-            "ONNX export ready: %s (max_abs_diff=%s)",
-            onnx_path,
-            onnx_record["parity"]["max_abs_diff"],
+            model,
+            weights_dir,
+            run_dir,
+            _dataset_class_names(valloader.dataset),
+            logger,
+            load_best=True,
         )
     summary = {
         "schema_version": 2,
@@ -764,6 +797,7 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
             "sample_indices": fixed_indices,
             "sample_display_height": 512,
             "sample_display_width": "preserve_aspect_ratio",
+            "sample_output_width": 800,
             "onnx_model": onnx_record.get("path"),
         },
     }

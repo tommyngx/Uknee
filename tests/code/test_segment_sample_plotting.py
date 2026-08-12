@@ -214,6 +214,7 @@ def generate_sample_output(output_dir: Path | None = None) -> Path:
             "sample_indices": dataset_indices,
             "sample_display_height": 512,
             "sample_display_width": "preserve_aspect_ratio",
+            "sample_output_width": 800,
             "onnx_model": onnx_record["path"],
         },
     }

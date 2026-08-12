@@ -93,15 +93,15 @@ deployment:
     path: weights/rwkv_unetv6.onnx
     format: onnx
     opset: 17
-    sha256: 944e18cc1c3ec1762fb72ad21515240704a353b29dee4e9c836eb4cabea08812
-    file_size_bytes: 1527
+    sha256: 8df4d8693136e1fed6242d3c83cc28af93a7471d6c73cb6e470df9ac1a117c52
+    file_size_bytes: 1584
     metadata:
       uknee.schema_version: '1'
       uknee.task: segmentation
       uknee.model_name: RWKV_UNetV6
       uknee.source_checkpoint: weights/best.pt
       uknee.opset: '17'
-      uknee.preprocess: '{"schema_version":1,"source_spatial_shape":"dynamic","network_input_shape":[1,3,256,256],"onnx_dynamic_axes":{"batch":true,"height":false,"width":false},"layout":"NCHW","dtype":"float32","color_space":"RGB","value_range":[0.0,1.0],"normalization":{"mode":"scale_0_1","mean":[0.0,0.0,0.0],"std":[1.0,1.0,1.0]},"resize":{"mode":"letterbox","keep_aspect_ratio":true,"target_height":256,"target_width":256,"pad_value":0,"placement":"center","image_interpolation":"bilinear","mask_interpolation":"nearest"}}'
+      uknee.preprocess: '{"schema_version":1,"source_spatial_shape":"dynamic","network_input_shape":[1,3,256,256],"image_size_hw":[256,256],"spatial_order":"height_width","onnx_dynamic_axes":{"batch":true,"height":false,"width":false},"layout":"NCHW","dtype":"float32","color_space":"RGB","value_range":[0.0,1.0],"normalization":{"mode":"scale_0_1","mean":[0.0,0.0,0.0],"std":[1.0,1.0,1.0]},"resize":{"mode":"letterbox","keep_aspect_ratio":true,"target_height":256,"target_width":256,"pad_value":0,"placement":"center","image_interpolation":"bilinear","mask_interpolation":"nearest"}}'
       uknee.class_names: '["Background","Femur","Tibia","Fibula","Overlap","Patella","Lat
         Fem Osteophyte","Med Fem Osteophyte","Lat Tib Osteophyte","Med Tib Osteophyte","Tibial
         Plateau"]'
@@ -114,6 +114,10 @@ deployment:
       - 3
       - 256
       - 256
+      image_size_hw:
+      - 256
+      - 256
+      spatial_order: height_width
       onnx_dynamic_axes:
         batch: true
         height: false
@@ -164,4 +168,5 @@ artifacts:
   - 383
   sample_display_height: 512
   sample_display_width: preserve_aspect_ratio
+  sample_output_width: 800
   onnx_model: weights/rwkv_unetv6.onnx
