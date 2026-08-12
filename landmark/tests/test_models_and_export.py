@@ -35,7 +35,7 @@ class ModelAndExportTests(unittest.TestCase):
         expected = {
             "yolo26-pose.yaml": ("Pose26", "n"),
             "yolo26-pose-v1.yaml": ("OA26HeatmapPose", "n"),
-            "yolo26-pose-v9.yaml": ("OA26RegionRefinePose", "l"),
+            "yolo26-pose-v9.yaml": ("OA26RegionRefinePose", "m"),
         }
         for filename, (head_name, scale) in expected.items():
             wrapper = KneePose(ROOT / "cfg" / "models" / filename)
