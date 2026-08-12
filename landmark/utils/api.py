@@ -108,6 +108,10 @@ class KneePose:
         args = _load_yaml(DEFAULT_CFG)
         args.update(kwargs)
         args.update(
+            # DEFAULT_CFG intentionally keeps model null for generic parsing,
+            # but Model.train merges keyword arguments last. Passing that null
+            # would overwrite the YAML/checkpoint already loaded by KneePose.
+            model=str(self.model_path),
             data=str(prepared.yaml_path),
             dataset_source=str(prepared.source_yaml),
             dataset_root=str(prepared.root),
