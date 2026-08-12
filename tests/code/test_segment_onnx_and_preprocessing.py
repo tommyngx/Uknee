@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import cv2
 import numpy as np
+import onnx
+import onnxruntime as ort
 import torch
 from PIL import Image
 
@@ -109,9 +111,21 @@ class SegmentONNXAndPreprocessingTests(unittest.TestCase):
             preprocess = json.loads(metadata["uknee.preprocess"])
             self.assertEqual(record["status"], "ready")
             self.assertTrue(record["parity"]["validated"])
+            self.assertEqual(record["parity"]["validated_batches"], [1, 2])
             self.assertEqual(preprocess["color_space"], "RGB")
             self.assertEqual(preprocess["resize"]["mode"], "letterbox")
             self.assertEqual(json.loads(metadata["uknee.class_names"]), ["background", "femur", "tibia"])
+            graph = onnx.load(str(path), load_external_data=False)
+            onnx.checker.check_model(graph)
+            dimensions = lambda value: [
+                dimension.dim_param or dimension.dim_value
+                for dimension in value.type.tensor_type.shape.dim
+            ]
+            self.assertEqual(dimensions(graph.graph.input[0]), ["batch", 3, 32, 32])
+            self.assertEqual(dimensions(graph.graph.output[0]), ["batch", 3, 32, 32])
+            session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+            output = session.run(["logits"], {"images": np.zeros((2, 3, 32, 32), dtype=np.float32)})[0]
+            self.assertEqual(output.shape, (2, 3, 32, 32))
 
 
 if __name__ == "__main__":

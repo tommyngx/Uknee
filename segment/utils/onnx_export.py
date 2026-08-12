@@ -102,6 +102,25 @@ def _write_metadata(path: Path, metadata: dict[str, str]) -> None:
     import onnx
 
     graph = onnx.load(str(path))
+    preprocess = json.loads(metadata["uknee.preprocess"])
+    output_contract = json.loads(metadata["uknee.output"])
+    _, channels, height, width = preprocess["network_input_shape"]
+    num_classes = int(output_contract["num_classes"])
+
+    def set_shape(value_info, dimensions):
+        tensor_shape = value_info.type.tensor_type.shape
+        del tensor_shape.dim[:]
+        for dimension in dimensions:
+            dim = tensor_shape.dim.add()
+            if isinstance(dimension, str):
+                dim.dim_param = dimension
+            else:
+                dim.dim_value = int(dimension)
+
+    # PyTorch 2.4 may incorrectly label V6 output spatial axes as symbolic while
+    # tracing Resize. Publish the exact deployment contract explicitly.
+    set_shape(graph.graph.input[0], ["batch", channels, height, width])
+    set_shape(graph.graph.output[0], ["batch", num_classes, height, width])
     retained = [(item.key, item.value) for item in graph.metadata_props if item.key not in metadata]
     del graph.metadata_props[:]
     for key, value in retained:
@@ -153,8 +172,6 @@ def export_segment_onnx(
     dummy = torch.zeros(1, channels, height, width, dtype=torch.float32, device=device)
 
     try:
-        with torch.no_grad():
-            reference = wrapper(dummy).detach().float().cpu().numpy()
         torch.onnx.export(
             wrapper,
             dummy,
@@ -169,16 +186,34 @@ def export_segment_onnx(
         metadata = build_segment_onnx_metadata(args, class_names=class_names)
         _write_metadata(output_path, metadata)
 
-        parity = {"validated": False, "provider": None, "max_abs_diff": None, "mean_abs_diff": None}
+        parity = {
+            "validated": False,
+            "validated_batches": [],
+            "provider": None,
+            "max_abs_diff": None,
+            "mean_abs_diff": None,
+        }
         if validate:
             import onnxruntime as ort
 
             session = ort.InferenceSession(str(output_path), providers=["CPUExecutionProvider"])
-            actual = session.run(["logits"], {"images": dummy.detach().cpu().numpy()})[0]
-            difference = np.abs(reference - actual)
-            np.testing.assert_allclose(actual, reference, rtol=2e-3, atol=2e-4)
+            differences = []
+            for validation_batch in (1, 2):
+                validation_input = dummy.expand(validation_batch, -1, -1, -1).contiguous()
+                with torch.no_grad():
+                    expected = wrapper(validation_input).detach().float().cpu().numpy()
+                actual = session.run(["logits"], {"images": validation_input.cpu().numpy()})[0]
+                if actual.shape != expected.shape:
+                    raise RuntimeError(
+                        f"ONNX output shape mismatch for batch={validation_batch}: "
+                        f"expected={expected.shape}, actual={actual.shape}"
+                    )
+                np.testing.assert_allclose(actual, expected, rtol=2e-3, atol=2e-4)
+                differences.append(np.abs(expected - actual))
+            difference = np.concatenate([item.reshape(-1) for item in differences])
             parity = {
                 "validated": True,
+                "validated_batches": [1, 2],
                 "provider": "CPUExecutionProvider",
                 "max_abs_diff": float(difference.max(initial=0.0)),
                 "mean_abs_diff": float(difference.mean()) if difference.size else 0.0,
