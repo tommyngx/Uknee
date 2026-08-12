@@ -532,8 +532,24 @@ class BaseTrainer:
             if self._oom_retries and not self.stop:
                 continue  # OOM recovery broke the for loop, restart with reduced batch size
 
-            if hasattr(unwrap_model(self.model).criterion, "update"):
-                unwrap_model(self.model).criterion.update()
+            criterion = unwrap_model(self.model).criterion
+            if hasattr(criterion, "update"):
+                criterion.update()
+            curriculum_state = criterion.curriculum_state() if hasattr(criterion, "curriculum_state") else None
+            if curriculum_state:
+                completed = int(curriculum_state["completed_epochs"])
+                detection_epochs = int(curriculum_state["detection_only_epochs"])
+                ramp_epochs = int(curriculum_state["ramp_epochs"])
+                milestones = {1, detection_epochs, detection_epochs + max(ramp_epochs - 1, 0)}
+                if completed in milestones and RANK in {-1, 0}:
+                    LOGGER.info(
+                        "Landmark curriculum for epoch %d: phase=%s, pose=%.3f, auxiliary=%.3f, refinement=%.3f",
+                        completed + 1,
+                        curriculum_state["phase"],
+                        curriculum_state["pose_factor"],
+                        curriculum_state["auxiliary_factor"],
+                        curriculum_state["refinement_factor"],
+                    )
 
             self.lr = {f"lr/pg{ir}": x["lr"] for ir, x in enumerate(self.optimizer.param_groups)}  # for loggers
 

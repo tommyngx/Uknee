@@ -19,6 +19,46 @@ from .metrics import bbox_iou, probiou
 from .tal import bbox2dist, rbox2dist
 
 
+class LandmarkLossCurriculum:
+    """Two-phase detection-first schedule for landmark-specific losses."""
+
+    def __init__(self, config: dict[str, Any] | None = None):
+        config = config or {}
+        self.detection_only_epochs = max(int(config.get("detection_only_epochs", 0)), 0)
+        self.ramp_epochs = max(int(config.get("ramp_epochs", 0)), 0)
+        self.pose_gain_scale = max(float(config.get("pose_gain_scale", 1.0)), 0.0)
+        self.auxiliary_gain_scale = max(float(config.get("auxiliary_gain_scale", 1.0)), 0.0)
+        self.refinement_gain_scale = max(float(config.get("refinement_gain_scale", 1.0)), 0.0)
+        self.completed_epochs = 0
+
+    @property
+    def factor(self) -> float:
+        """Return zero during detection-only training, then linearly ramp to one."""
+        if self.completed_epochs < self.detection_only_epochs:
+            return 0.0
+        if self.ramp_epochs == 0:
+            return 1.0
+        ramp_step = self.completed_epochs - self.detection_only_epochs + 1
+        return min(max(ramp_step / self.ramp_epochs, 0.0), 1.0)
+
+    def set_completed_epochs(self, completed_epochs: int) -> None:
+        self.completed_epochs = max(int(completed_epochs), 0)
+
+    def state(self) -> dict[str, float | int | str]:
+        factor = self.factor
+        phase = "detection_only" if factor == 0.0 else "landmark_ramp" if factor < 1.0 else "joint_training"
+        return {
+            "phase": phase,
+            "completed_epochs": self.completed_epochs,
+            "detection_only_epochs": self.detection_only_epochs,
+            "ramp_epochs": self.ramp_epochs,
+            "landmark_factor": factor,
+            "pose_factor": factor * self.pose_gain_scale,
+            "auxiliary_factor": factor * self.auxiliary_gain_scale,
+            "refinement_factor": factor * self.refinement_gain_scale,
+        }
+
+
 class VarifocalLoss(nn.Module):
     """Varifocal loss by Zhang et al.
 
@@ -807,6 +847,9 @@ class PoseLoss26(v8PoseLoss):
     ):  # model must be de-paralleled
         """Initialize PoseLoss26 with model parameters and keypoint-specific loss functions including RLE loss."""
         super().__init__(model, tal_topk, tal_topk2)
+        self.landmark_curriculum = LandmarkLossCurriculum(
+            getattr(model, "yaml", {}).get("landmark_curriculum", {})
+        )
         is_pose = self.kpt_shape == [17, 3]
         nkpt = self.kpt_shape[0]  # number of keypoints
         self.rle_loss = None
@@ -840,9 +883,10 @@ class PoseLoss26(v8PoseLoss):
             pred_kpts = torch.cat([pred_kpts, pred_sigma], dim=-1)  # (b, h*w, 17, 5)
 
         pred_kpts = self.kpts_decode(anchor_points, pred_kpts)
+        pose_factor = self.landmark_curriculum.factor * self.landmark_curriculum.pose_gain_scale
 
         # Keypoint loss
-        if fg_mask.sum():
+        if fg_mask.sum() and pose_factor > 0.0:
             keypoints = batch["keypoints"].to(self.device).float().clone()
             keypoints[..., 0] *= imgsz[1]
             keypoints[..., 1] *= imgsz[0]
@@ -860,13 +904,32 @@ class PoseLoss26(v8PoseLoss):
             loss[2] = keypoints_loss[1]
             if self.rle_loss is not None:
                 loss[5] = keypoints_loss[2]
+        elif pose_factor == 0.0:
+            # Keep pose-head parameters connected for distributed training,
+            # while avoiding keypoint target/loss construction in phase one.
+            disabled_pose_loss = pred_kpts.sum() * 0.0
+            loss[1] = disabled_pose_loss
+            loss[2] = disabled_pose_loss
+            if self.rle_loss is not None:
+                loss[5] = disabled_pose_loss
 
-        loss[1] *= self.hyp.pose  # pose gain
-        loss[2] *= self.hyp.kobj  # kobj gain
+        loss[1] *= self.hyp.pose * pose_factor  # pose gain, curriculum-controlled
+        loss[2] *= self.hyp.kobj * pose_factor  # kobj gain, curriculum-controlled
         if self.rle_loss is not None:
-            loss[5] *= self.hyp.rle  # rle gain
+            loss[5] *= self.hyp.rle * pose_factor  # rle gain, curriculum-controlled
 
         return loss * batch_size, loss.detach()  # loss(box, kpt_location, kpt_visibility, cls, dfl[, rle])
+
+    def set_completed_epochs(self, completed_epochs: int) -> None:
+        """Synchronize curriculum state with the trainer or a resumed checkpoint."""
+        self.landmark_curriculum.set_completed_epochs(completed_epochs)
+
+    def update(self) -> None:
+        """Advance one completed epoch when used without the E2E wrapper."""
+        self.set_completed_epochs(self.landmark_curriculum.completed_epochs + 1)
+
+    def curriculum_state(self) -> dict[str, float | int | str]:
+        return self.landmark_curriculum.state()
 
     @staticmethod
     def kpts_decode(anchor_points: torch.Tensor, pred_kpts: torch.Tensor) -> torch.Tensor:
@@ -1200,6 +1263,15 @@ class E2ELoss:
         self.updates += 1
         self.o2m = self.decay(self.updates)
         self.o2o = max(self.total - self.o2m, 0)
+        for criterion in (self.one2many, self.one2one):
+            if hasattr(criterion, "set_completed_epochs"):
+                criterion.set_completed_epochs(self.updates)
+
+    def curriculum_state(self) -> dict[str, float | int | str] | None:
+        """Expose the synchronized one-to-one curriculum for reporting."""
+        if hasattr(self.one2one, "curriculum_state"):
+            return self.one2one.curriculum_state()
+        return None
 
     def decay(self, x) -> float:
         """Calculate the decayed weight for one-to-many loss based on the current update step."""
@@ -1426,7 +1498,17 @@ class OA26HeatmapPoseLoss(PoseLoss26):
             return base_loss, base_detach
 
         batch_size = preds["heatmaps"].shape[0]
-        aux = self.auxiliary_loss(preds, batch)
+        auxiliary_factor = (
+            self.landmark_curriculum.factor
+            * self.landmark_curriculum.auxiliary_gain_scale
+        )
+        if auxiliary_factor > 0.0:
+            aux = self.auxiliary_loss(preds, batch) * auxiliary_factor
+        else:
+            # Do not build 129-channel Gaussian targets during detection-only
+            # training, but retain a zero-gradient graph connection.
+            disabled_aux = (preds["heatmaps"].sum() + preds["hm_kpts"].sum()) * 0.0
+            aux = preds["heatmaps"].new_zeros(4) + disabled_aux
         return torch.cat((base_loss, aux * batch_size)), torch.cat((base_detach, aux.detach()))
 
     def auxiliary_loss(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> torch.Tensor:
@@ -1577,7 +1659,16 @@ class OA26RegionRefinePoseLoss(OA26HeatmapPoseLoss):
         debug_event("v9-loss-enter", branch=self.debug_branch, batch=preds["boxes"].shape[0])
         base_loss, base_detach = super().loss(preds, batch)
         debug_event("v9-loss-base-complete", branch=self.debug_branch)
-        region_loss = self.region_refinement_loss(preds, batch)
+        refinement_factor = (
+            self.landmark_curriculum.factor
+            * self.landmark_curriculum.refinement_gain_scale
+        )
+        if refinement_factor > 0.0:
+            region_loss = self.region_refinement_loss(preds, batch) * refinement_factor
+        else:
+            probability = preds.get("region_heatmaps")
+            disabled_refinement = probability.sum() * 0.0 if probability is not None else preds["boxes"].sum() * 0.0
+            region_loss = preds["boxes"].new_zeros(4) + disabled_refinement
         batch_size = preds["boxes"].shape[0]
         total = torch.cat((base_loss, region_loss * batch_size))
         mark_backward(total, "v9-loss-backward-enter", branch=self.debug_branch)

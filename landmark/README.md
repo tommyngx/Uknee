@@ -62,8 +62,14 @@ nhận folder, chương trình tìm `data.yaml`, `dataset.yaml` hoặc YAML đ�
 sau đó tạo bản runtime tại `<project>/.uknee/datasets` với `path` tuyệt đối.
 Nếu folder chưa có YAML, schema landmark 4 vùng/51 keypoint được tạo tự động.
 
-`yolo26-pose-v9` mặc định dùng compound scale `x`; vì vậy CLI vẫn ghi
-`--model yolo26-pose-v9`, không thêm chữ `x` vào tên model.
+`yolo26-pose-v9` dùng compound scale được khai báo trực tiếp trong YAML
+(hiện tại là `l`); CLI vẫn ghi `--model yolo26-pose-v9`.
+
+Các YOLO pose model dùng curriculum detection-first: epoch 1–50 chỉ tối ưu
+box/class/DFL; epoch 51–75 mở tuyến tính pose, keypoint-object, heatmap và
+structure/refinement loss. Weight pose cuối ramp bằng 50% cấu hình gốc để
+auxiliary landmark loss không lấn át việc học bounding box. Cấu hình đầy đủ
+được lưu trong `summary.yaml` tại `training.loss_curriculum`.
 
 Đường dẫn dataset rút gọn `--dataset /mesko_landmark` hoặc
 `--dataset mesko_landmark` được hiểu là

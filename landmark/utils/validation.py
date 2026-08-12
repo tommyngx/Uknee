@@ -273,6 +273,8 @@ class FlatPoseTrainerMixin:
         if duration is None:
             duration = max(time.time() - getattr(self, "train_time_start", time.time()), 0.0)
         model_source = self._resolved_model_source()
+        core_model = self.model.module if hasattr(self.model, "module") else self.model
+        curriculum_config = (getattr(core_model, "yaml", {}) or {}).get("landmark_curriculum", {})
         optimizer = getattr(self, "optimizer", None)
         sample_paths = getattr(getattr(self, "validator", None), "_sample_paths", ())
         validator_speed = getattr(getattr(self, "validator", None), "speed", {}) or {}
@@ -320,6 +322,7 @@ class FlatPoseTrainerMixin:
                 "seconds_per_epoch": round(duration / max(len(rows), 1), 3),
                 "device": str(getattr(self, "device", "")),
                 "torch_version": str(torch.__version__),
+                "loss_curriculum": _clean_scalar(curriculum_config),
             },
             "performance": {
                 "selection_metric": "metrics/MRE",

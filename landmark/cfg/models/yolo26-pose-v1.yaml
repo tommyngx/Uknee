@@ -7,11 +7,17 @@ end2end: True
 reg_max: 1
 kpt_shape: [51, 3]
 scale: n
+landmark_curriculum:
+  detection_only_epochs: 50
+  ramp_epochs: 25
+  pose_gain_scale: 0.5
+  auxiliary_gain_scale: 1.0
+  refinement_gain_scale: 1.0
 oa26_loss:
-  heatmap: 1.0
-  coord: 0.5
-  neighbour: 0.25
-  curve: 0.25
+  heatmap: 0.25
+  coord: 0.02
+  neighbour: 0.01
+  curve: 0.005
   sigma: 1.5
 scales:
   n: [0.50, 0.25, 1024]

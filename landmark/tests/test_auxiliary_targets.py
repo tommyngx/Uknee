@@ -6,7 +6,7 @@ import torch
 import landmark  # noqa: F401 - bootstrap the pinned backend before absolute imports
 
 from landmark.core.targets import extract_canonical_image_keypoints
-from landmark.core.loss import OA26HeatmapPoseLoss
+from landmark.core.loss import LandmarkLossCurriculum, OA26HeatmapPoseLoss
 from landmark.data.schema import class_path_masks
 
 
@@ -59,6 +59,31 @@ class AuxiliaryTargetTests(unittest.TestCase):
         self.assertFalse(bool(edge_mask[45]))
         self.assertFalse(bool(curve_mask[39]))
         self.assertFalse(bool(curve_mask[40]))
+
+    def test_detection_first_curriculum_opens_landmark_losses_after_epoch_50(self):
+        schedule = LandmarkLossCurriculum(
+            {
+                "detection_only_epochs": 50,
+                "ramp_epochs": 25,
+                "pose_gain_scale": 0.5,
+                "auxiliary_gain_scale": 1.0,
+                "refinement_gain_scale": 1.0,
+            }
+        )
+        for completed_epochs in (0, 1, 49):
+            schedule.set_completed_epochs(completed_epochs)
+            self.assertEqual(schedule.factor, 0.0)
+            self.assertEqual(schedule.state()["phase"], "detection_only")
+
+        schedule.set_completed_epochs(50)
+        self.assertAlmostEqual(schedule.factor, 1 / 25)
+        self.assertAlmostEqual(schedule.state()["pose_factor"], 0.5 / 25)
+        self.assertEqual(schedule.state()["phase"], "landmark_ramp")
+
+        schedule.set_completed_epochs(74)
+        self.assertEqual(schedule.factor, 1.0)
+        self.assertEqual(schedule.state()["pose_factor"], 0.5)
+        self.assertEqual(schedule.state()["phase"], "joint_training")
 
 
 if __name__ == "__main__":

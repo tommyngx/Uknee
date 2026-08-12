@@ -6,14 +6,23 @@ nc: 4
 end2end: True
 reg_max: 1
 kpt_shape: [51, 3]
-scale: l
+scale: m
+
+# Learn reliable femur/tibia/fibula/patella boxes first. Landmark-specific
+# losses then ramp in gradually instead of competing with detection at start.
+landmark_curriculum:
+  detection_only_epochs: 50
+  ramp_epochs: 25
+  pose_gain_scale: 0.5
+  auxiliary_gain_scale: 1.0
+  refinement_gain_scale: 1.0
 
 # Preserve the four auxiliary losses from posev1; refinement losses below supervise every class instance.
 oa26_loss:
-  heatmap: 1.0
-  coord: 0.5
-  neighbour: 0.25
-  curve: 0.25
+  heatmap: 0.25
+  coord: 0.02
+  neighbour: 0.01
+  curve: 0.005
   sigma: 1.5
 
 # V9-only region refinement settings. The implementation lives under oa26_region_refine and does not modify v1-v8.
@@ -35,11 +44,11 @@ oa26_region_refine:
   use_coarse_spatial_prior: false
   coarse_prior_sigma: 0.25
   coarse_prior_gain: 0.5
-  refined_heatmap_gain: 1.0
+  refined_heatmap_gain: 0.25
   refined_heatmap_sigma: 1.5
-  refined_coord_gain: 0.5
-  refined_neighbour_gain: 0.1
-  refined_curve_gain: 0.1
+  refined_coord_gain: 0.25
+  refined_neighbour_gain: 0.05
+  refined_curve_gain: 0.02
 
 scales:
   n: [0.50, 0.25, 1024]

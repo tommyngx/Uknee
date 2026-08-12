@@ -10,6 +10,12 @@ end2end: True # whether to use end-to-end mode
 reg_max: 1 # DFL bins
 kpt_shape: [51, 3] # padded per-region keypoints (actual counts: 45/51/24/9)
 scale: n
+landmark_curriculum:
+  detection_only_epochs: 50
+  ramp_epochs: 25
+  pose_gain_scale: 0.5
+  auxiliary_gain_scale: 1.0
+  refinement_gain_scale: 1.0
 scales: # model compound scaling constants, i.e. 'model=yolo26n-pose.yaml' will call yolo26-pose.yaml with scale 'n'
   # [depth, width, max_channels]
   n: [0.50, 0.25, 1024] # summary: 363 layers, 3,747,554 parameters, 3,747,554 gradients, 10.7 GFLOPs

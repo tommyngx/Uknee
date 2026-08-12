@@ -1,40 +1,39 @@
-"""Pose-only data pipeline and canonical MESKO4GF2 schema."""
+"""Pose-only data pipeline with lazy exports to avoid import cycles."""
 
-from .build import build_dataloader, build_yolo_dataset, load_inference_source
-from .dataset import YOLODataset
-from .prepare import PreparedDataset, prepare_dataset
-from .schema import (
-    LANDMARK_PATH_RANGES,
-    MAX_REGION_KEYPOINTS,
-    NUM_LANDMARKS,
-    NUM_REGIONS,
-    POINT_REGION_IDS,
-    REGION_KEYPOINT_COUNTS,
-    REGION_NAMES,
-    REGION_OFFSETS,
-    class_keypoint_mask,
-    class_path_masks,
-    objects_to_canonical,
-    validate_region_schema,
-)
+from __future__ import annotations
 
-__all__ = [
-    "LANDMARK_PATH_RANGES",
-    "MAX_REGION_KEYPOINTS",
-    "NUM_LANDMARKS",
-    "NUM_REGIONS",
-    "POINT_REGION_IDS",
-    "PreparedDataset",
-    "REGION_KEYPOINT_COUNTS",
-    "REGION_NAMES",
-    "REGION_OFFSETS",
-    "YOLODataset",
-    "build_dataloader",
-    "build_yolo_dataset",
-    "class_keypoint_mask",
-    "class_path_masks",
-    "load_inference_source",
-    "objects_to_canonical",
-    "prepare_dataset",
-    "validate_region_schema",
-]
+from importlib import import_module
+
+
+_EXPORT_MODULES = {
+    "build_dataloader": ".build",
+    "build_yolo_dataset": ".build",
+    "load_inference_source": ".build",
+    "YOLODataset": ".dataset",
+    "PreparedDataset": ".prepare",
+    "prepare_dataset": ".prepare",
+    "LANDMARK_PATH_RANGES": ".schema",
+    "MAX_REGION_KEYPOINTS": ".schema",
+    "NUM_LANDMARKS": ".schema",
+    "NUM_REGIONS": ".schema",
+    "POINT_REGION_IDS": ".schema",
+    "REGION_KEYPOINT_COUNTS": ".schema",
+    "REGION_NAMES": ".schema",
+    "REGION_OFFSETS": ".schema",
+    "class_keypoint_mask": ".schema",
+    "class_path_masks": ".schema",
+    "objects_to_canonical": ".schema",
+    "validate_region_schema": ".schema",
+}
+
+
+def __getattr__(name: str):
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, package=__name__), name)
+    globals()[name] = value
+    return value
+
+
+__all__ = list(_EXPORT_MODULES)

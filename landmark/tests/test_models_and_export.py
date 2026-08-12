@@ -33,7 +33,7 @@ class ModelAndExportTests(unittest.TestCase):
         expected = {
             "yolo26-pose.yaml": ("Pose26", "n"),
             "yolo26-pose-v1.yaml": ("OA26HeatmapPose", "n"),
-            "yolo26-pose-v9.yaml": ("OA26RegionRefinePose", "x"),
+            "yolo26-pose-v9.yaml": ("OA26RegionRefinePose", "l"),
         }
         for filename, (head_name, scale) in expected.items():
             wrapper = KneePose(ROOT / "cfg" / "models" / filename)
@@ -142,6 +142,9 @@ class ModelAndExportTests(unittest.TestCase):
         for filename, prefixes in required.items():
             model = KneePose(ROOT / "cfg" / "models" / filename).model.train()
             model.args = get_cfg(overrides={"task": "pose", "mode": "train", "imgsz": 64})
+            model.criterion = model.init_criterion()
+            for _ in range(50):
+                model.criterion.update()
             loss, _ = model(self._pose_batch())
             loss.sum().backward()
             head = model.model[-1]
@@ -151,6 +154,19 @@ class ModelAndExportTests(unittest.TestCase):
                     any(gradient is not None for name, gradient in parameter_grads.items() if name.startswith(prefix)),
                     f"{filename}: no gradient reached {prefix}",
                 )
+
+    def test_detection_only_phase_zeros_every_landmark_loss(self):
+        model = KneePose(ROOT / "cfg" / "models" / "yolo26-pose-v1.yaml").model.train()
+        model.args = get_cfg(overrides={"task": "pose", "mode": "train", "imgsz": 64})
+        loss, reported = model(self._pose_batch())
+
+        # V1 vector: box, pose, kobj, cls, dfl, heatmap, coord,
+        # neighbour, curve. E2E returns the same layout after branch fusion.
+        landmark_indices = [1, 2, *range(5, len(loss))]
+        self.assertTrue(torch.equal(loss[landmark_indices], torch.zeros_like(loss[landmark_indices])))
+        self.assertEqual(float(reported[1]), 0.0)
+        self.assertEqual(float(reported[2]), 0.0)
+        self.assertGreater(float(loss[[0, 3, 4]].sum().detach()), 0.0)
 
     def test_legacy_name_is_rejected_clearly(self):
         with self.assertRaises((FileNotFoundError, ValueError)):
