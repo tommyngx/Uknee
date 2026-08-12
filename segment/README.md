@@ -6,7 +6,10 @@ Default được đặt trong `cfg/default.yaml`; option CLI ghi đè trực ti�
 là tên trong `segment.models.MODEL_REGISTRY`. Mỗi lần train lưu vào
 `<project>/runs/<name>` với `weights/`, `samples/`, `args.yaml`, `summary.yaml`
 và ONNX (RWKV_UNetV3/V6).
-Mỗi khi `weights/best.pt` được cập nhật, ONNX tương ứng cũng được export và thay thế ngay; ảnh sample có chiều rộng 800 px và giữ nguyên tỷ lệ.
+`best.pt` vẫn được cập nhật ngay khi Dice tốt hơn. Để không làm chậm training,
+ONNX chỉ đồng bộ ở epoch 1, mỗi 10 epoch và epoch cuối, với điều kiện có best
+mới kể từ lần export trước. Có thể đổi chu kỳ bằng `--onnx-export-interval`.
+Ảnh sample có chiều rộng 800 px và giữ nguyên tỷ lệ.
 
 Để chạy từ notebook hoặc thư mục ngoài repository, cài source một lần bằng
 đúng Python của kernel:

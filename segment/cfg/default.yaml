@@ -21,6 +21,7 @@ project: ""
 exist_ok: true
 pixel_spacing_mm: 0.10
 auto_export_onnx: true
+onnx_export_interval: 10  # epoch 1, every N epochs, and final epoch; only if best changed
 zero_shot_base_dir: ""
 zero_shot_dataset_name: ""
 do_deeps: false

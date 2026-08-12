@@ -62,6 +62,7 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--exist_ok", action=argparse.BooleanOptionalAction, default=values.get("exist_ok", True))
     parser.add_argument("--pixel_spacing_mm", type=float, default=values["pixel_spacing_mm"])
     parser.add_argument("--auto_export_onnx", "--auto-export-onnx", dest="auto_export_onnx", action=argparse.BooleanOptionalAction, default=values["auto_export_onnx"])
+    parser.add_argument("--onnx_export_interval", "--onnx-export-interval", dest="onnx_export_interval", type=int, default=values.get("onnx_export_interval", 10))
     parser.add_argument("--zero_shot_base_dir", default=values["zero_shot_base_dir"])
     parser.add_argument("--zero_shot_dataset_name", default=values["zero_shot_dataset_name"])
     parser.add_argument("--do_deeps", type=_str2bool, nargs="?", const=True, default=values["do_deeps"])

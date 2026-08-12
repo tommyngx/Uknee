@@ -239,6 +239,11 @@ def export_segment_onnx(
             )
             warnings.filterwarnings(
                 "ignore",
+                message=r"The feature will be removed.*",
+                category=DeprecationWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
                 message=r"Constant folding - Only steps=1 can be constant folded.*",
                 category=UserWarning,
             )

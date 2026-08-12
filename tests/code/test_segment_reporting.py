@@ -28,7 +28,7 @@ from segment.utils.training_logs import (
     save_summary_yaml,
     save_training_args,
 )
-from segment.main import _export_best_segment_onnx
+from segment.main import _export_best_segment_onnx, _should_export_pending_best
 
 
 RESULT_COLUMNS = [
@@ -38,6 +38,13 @@ RESULT_COLUMNS = [
 
 
 class SegmentReportingTests(unittest.TestCase):
+    def test_onnx_export_schedule_only_exports_pending_best(self):
+        self.assertTrue(_should_export_pending_best(1, 200, 1, 0, 10))
+        self.assertFalse(_should_export_pending_best(5, 200, 5, 1, 10))
+        self.assertTrue(_should_export_pending_best(10, 200, 7, 1, 10))
+        self.assertFalse(_should_export_pending_best(20, 200, 7, 7, 10))
+        self.assertTrue(_should_export_pending_best(200, 200, 197, 190, 10))
+
     def test_best_checkpoint_refreshes_onnx_atomically(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = Path(tmpdir)

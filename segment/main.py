@@ -94,6 +94,14 @@ RESULT_COLUMNS = [
     "val/prec",
 ]
 
+
+def _should_export_pending_best(epoch, total_epochs, best_epoch, last_exported_best_epoch, interval=10):
+    """Export at epoch 1, each interval, and final epoch only when best.pt changed."""
+    epoch = int(epoch)
+    interval = max(int(interval), 1)
+    scheduled = epoch == 1 or epoch % interval == 0 or epoch == int(total_epochs)
+    return scheduled and int(best_epoch) > int(last_exported_best_epoch)
+
 def convert_to_numpy(data):
     if isinstance(data, torch.Tensor):
         return data.cpu().numpy()
@@ -670,22 +678,13 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     training_started = time.time()
     best_epoch = max((int(row["epoch"]) for row in history_rows if row["val/dice"] == best_dice), default=0)
     onnx_record = None
-    if args.resume and (weights_dir / "best.pt").is_file():
-        resume_onnx_path = weights_dir / onnx_filename(args.model)
-        if (
-            not resume_onnx_path.is_file()
-            or resume_onnx_path.stat().st_mtime_ns < (weights_dir / "best.pt").stat().st_mtime_ns
-        ):
-            logger.info("Resume found best.pt without a current ONNX model; exporting it before training continues.")
-            onnx_record = _export_best_segment_onnx(
-                args,
-                model,
-                weights_dir,
-                run_dir,
-                _dataset_class_names(valloader.dataset),
-                logger,
-                load_best=True,
-            )
+    onnx_path = weights_dir / onnx_filename(args.model)
+    best_path = weights_dir / "best.pt"
+    last_exported_best_epoch = (
+        best_epoch
+        if onnx_path.is_file() and best_path.is_file() and onnx_path.stat().st_mtime_ns >= best_path.stat().st_mtime_ns
+        else 0
+    )
 
     for epoch_num in range(start_epoch, args.max_epochs):
         epoch_id = epoch_num + 1
@@ -736,6 +735,18 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
             best_dice = snapshot.dice
             best_epoch = epoch_id
             _save_checkpoint(weights_dir / "best.pt", args, model, optimizer, epoch_id, best_dice, epoch_row)
+        if _should_export_pending_best(
+            epoch_id,
+            args.max_epochs,
+            best_epoch,
+            last_exported_best_epoch,
+            args.onnx_export_interval,
+        ):
+            logger.info(
+                "ONNX export checkpoint reached at epoch %d; exporting best.pt from epoch %d.",
+                epoch_id,
+                best_epoch,
+            )
             onnx_record = _export_best_segment_onnx(
                 args,
                 model,
@@ -745,6 +756,8 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
                 logger,
                 load_best=True,
             )
+            if onnx_record.get("status") == "ready":
+                last_exported_best_epoch = best_epoch
 
         evaluator.save_samples(run_dir / "samples" / f"segment_sample_e{epoch_id}.png", epoch_id)
         plot_segmentation_metrics(snapshot, run_dir / "segment_metrics.png")
@@ -776,7 +789,7 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
     best_row = next((row for row in history_rows if int(row["epoch"]) == best_epoch), {})
     final_row = history_rows[-1] if history_rows else {}
     preprocess_schema = segment_preprocess_schema(args)
-    if onnx_record is None or onnx_record.get("status") != "ready":
+    if best_epoch > last_exported_best_epoch:
         onnx_record = _export_best_segment_onnx(
             args,
             model,
@@ -785,6 +798,15 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
             _dataset_class_names(valloader.dataset),
             logger,
             load_best=True,
+        )
+        if onnx_record.get("status") == "ready":
+            last_exported_best_epoch = best_epoch
+    elif onnx_record is None:
+        previous_onnx_record = previous_summary.get("deployment", {}).get("onnx", {})
+        onnx_record = previous_onnx_record if onnx_path.is_file() and previous_onnx_record else (
+            {"status": "ready", "path": onnx_path.relative_to(run_dir).as_posix()}
+            if onnx_path.is_file()
+            else {"status": "not_generated", "path": None}
         )
     summary = {
         "schema_version": 2,
@@ -830,6 +852,8 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
         },
         "deployment": {
             "auto_export_onnx": bool(args.auto_export_onnx),
+            "onnx_export_interval": int(args.onnx_export_interval),
+            "last_exported_best_epoch": int(last_exported_best_epoch),
             "onnx": onnx_record,
         },
         "artifacts": {
