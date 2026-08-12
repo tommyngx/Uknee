@@ -1,5 +1,6 @@
 import inspect
 import json
+import os
 import warnings
 from functools import lru_cache
 from importlib import import_module
@@ -222,9 +223,12 @@ def _instantiate_model(model_factory, kwargs):
 def build_model(config, **kwargs):
     model_name = config.model
     model_id, config.do_deeps = load_model_id(model_name)
-    print(f"Building model {model_name} with model_id {model_id} and do_deeps {config.do_deeps}")
+    debug = os.environ.get("UKNEE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    if debug:
+        print(f"Building model {model_name} with model_id {model_id} and do_deeps {config.do_deeps}")
     config.model_id = model_id
-    print(f"Using model_id {model_id} for model {model_name}")
+    if debug:
+        print(f"Using model_id {model_id} for model {model_name}")
 
     if (
         (
@@ -246,7 +250,8 @@ def build_model(config, **kwargs):
         kwargs["deep_supervision"] = bool(getattr(config, "do_deeps", False))
 
     model_factory = _load_model_factory(model_name)
-    print(f"kwargs: {kwargs}")
+    if debug:
+        print(f"kwargs: {kwargs}")
     return _instantiate_model(model_factory, kwargs)
 
 

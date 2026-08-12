@@ -48,7 +48,15 @@ class SegmentReportingTests(unittest.TestCase):
 
             def fake_export(_model, _args, output_path, **_kwargs):
                 Path(output_path).write_bytes(b"new-onnx")
-                return {"status": "ready", "parity": {"max_abs_diff": 0.0}}
+                return {
+                    "status": "ready",
+                    "parity": {
+                        "max_abs_diff": 0.0,
+                        "mean_abs_diff": 0.0,
+                        "p99_abs_diff": 0.0,
+                        "postprocess_agreement": 1.0,
+                    },
+                }
 
             with patch("segment.main.export_segment_onnx", side_effect=fake_export) as export:
                 record = _export_best_segment_onnx(

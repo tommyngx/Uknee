@@ -6,6 +6,7 @@ from copy import deepcopy
 import hashlib
 import json
 import re
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -219,17 +220,42 @@ def export_segment_onnx(
     dummy = torch.zeros(1, channels, height, width, dtype=torch.float32, device=device)
 
     try:
-        torch.onnx.export(
-            wrapper,
-            dummy,
-            str(output_path),
-            input_names=["images"],
-            output_names=["logits"],
-            opset_version=ONNX_OPSET,
-            dynamic_axes={"images": {0: "batch"}, "logits": {0: "batch"}},
-            do_constant_folding=True,
-            dynamo=False,
-        )
+        # The PyTorch 2.4 legacy ONNX tracer mutates execution state in some V3
+        # modules. Capture immutable eager references before tracing; the live
+        # trainer is already protected by exporting a separate model copy.
+        validation_cases = []
+        if validate:
+            with torch.no_grad():
+                for validation_batch in (1, 2):
+                    validation_input = dummy.expand(validation_batch, -1, -1, -1).contiguous()
+                    expected = wrapper(validation_input).detach().float().cpu().numpy().copy()
+                    validation_cases.append((validation_batch, validation_input.cpu().numpy().copy(), expected))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", torch.jit.TracerWarning)
+            warnings.filterwarnings(
+                "ignore",
+                message=r"You are using the legacy TorchScript-based ONNX export.*",
+                category=DeprecationWarning,
+            )
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Constant folding - Only steps=1 can be constant folded.*",
+                category=UserWarning,
+            )
+            torch.onnx.export(
+                wrapper,
+                dummy,
+                str(output_path),
+                input_names=["images"],
+                output_names=["logits"],
+                opset_version=ONNX_OPSET,
+                dynamic_axes={"images": {0: "batch"}, "logits": {0: "batch"}},
+                # PyTorch 2.4's legacy exporter can incorrectly fold the V3
+                # Conv/BatchNorm graph around Slice/Pad nodes after training.
+                # ONNX Runtime performs its own safe graph optimizations later.
+                do_constant_folding=False,
+                dynamo=False,
+            )
         metadata = build_segment_onnx_metadata(args, class_names=class_names)
         _write_metadata(output_path, metadata)
 
@@ -245,11 +271,8 @@ def export_segment_onnx(
 
             session = ort.InferenceSession(str(output_path), providers=["CPUExecutionProvider"])
             batch_statistics = []
-            for validation_batch in (1, 2):
-                validation_input = dummy.expand(validation_batch, -1, -1, -1).contiguous()
-                with torch.no_grad():
-                    expected = wrapper(validation_input).detach().float().cpu().numpy()
-                actual = session.run(["logits"], {"images": validation_input.cpu().numpy()})[0]
+            for validation_batch, validation_input, expected in validation_cases:
+                actual = session.run(["logits"], {"images": validation_input})[0]
                 if actual.shape != expected.shape:
                     raise RuntimeError(
                         f"ONNX output shape mismatch for batch={validation_batch}: "

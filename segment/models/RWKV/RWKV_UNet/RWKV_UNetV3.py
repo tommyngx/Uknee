@@ -2,12 +2,22 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from timm.layers import DropPath, create_act_layer, trunc_normal_
 
 from .module.basic_modules import ConvNormAct, get_act, get_norm
 
 
-inplace = True
+# Out-of-place activations keep residual/skip aliases explicit for ONNX export.
+# This does not alter parameters or checkpoint compatibility.
+inplace = False
+
+
+def _onnx_safe_nan_to_num(value, *, low, high):
+    """Avoid PyTorch 2.4's incorrect ONNX symbolic for nan_to_num on finite deployment activations."""
+    if torch.onnx.is_in_onnx_export():
+        return torch.clamp(value, low, high)
+    return torch.clamp(torch.nan_to_num(value, nan=0.0, posinf=high, neginf=low), low, high)
 
 
 def _sanitize_module_finite_(module):
@@ -24,20 +34,20 @@ def _sanitize_module_finite_(module):
 
 
 def q_shift(input, shift_pixel=1, gamma=1 / 4, patch_resolution=None):
+    """Shift channel groups without in-place slice assignment (ONNX-safe)."""
     assert gamma <= 1 / 4
     b, _, c = input.shape
     h, w = patch_resolution
     input = input.transpose(1, 2).reshape(b, c, h, w)
-    output = torch.zeros_like(input)
     c1 = int(c * gamma)
     c2 = int(c * gamma * 2)
     c3 = int(c * gamma * 3)
     c4 = int(c * gamma * 4)
-    output[:, 0:c1, :, shift_pixel:w] = input[:, 0:c1, :, 0 : w - shift_pixel]
-    output[:, c1:c2, :, 0 : w - shift_pixel] = input[:, c1:c2, :, shift_pixel:w]
-    output[:, c2:c3, shift_pixel:h, :] = input[:, c2:c3, 0 : h - shift_pixel, :]
-    output[:, c3:c4, 0 : h - shift_pixel, :] = input[:, c3:c4, shift_pixel:h, :]
-    output[:, c4:, ...] = input[:, c4:, ...]
+    shift_right = F.pad(input[:, 0:c1, :, :-shift_pixel], (shift_pixel, 0, 0, 0))
+    shift_left = F.pad(input[:, c1:c2, :, shift_pixel:], (0, shift_pixel, 0, 0))
+    shift_down = F.pad(input[:, c2:c3, :-shift_pixel, :], (0, 0, shift_pixel, 0))
+    shift_up = F.pad(input[:, c3:c4, shift_pixel:, :], (0, 0, 0, shift_pixel))
+    output = torch.cat((shift_right, shift_left, shift_down, shift_up, input[:, c4:, ...]), dim=1)
     return output.flatten(2).transpose(1, 2)
 
 
@@ -112,14 +122,14 @@ class SafeVRWKVSpatialMix(nn.Module):
             xv = x
             xr = x
 
-        k = torch.clamp(torch.nan_to_num(self.key(xk), nan=0.0, posinf=30.0, neginf=-30.0), -30.0, 30.0)
-        v = torch.clamp(torch.nan_to_num(self.value(xv), nan=0.0, posinf=30.0, neginf=-30.0), -30.0, 30.0)
-        r = torch.clamp(torch.nan_to_num(self.receptance(xr), nan=0.0, posinf=30.0, neginf=-30.0), -30.0, 30.0)
+        k = _onnx_safe_nan_to_num(self.key(xk), low=-30.0, high=30.0)
+        v = _onnx_safe_nan_to_num(self.value(xv), low=-30.0, high=30.0)
+        r = _onnx_safe_nan_to_num(self.receptance(xr), low=-30.0, high=30.0)
 
         x = self.key_norm(k + v)
         x = torch.sigmoid(r) * x
         x = self.output(x)
-        return torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
+        return _onnx_safe_nan_to_num(x, low=-1e4, high=1e4)
 
 
 class UpBlock(nn.Module):
@@ -407,7 +417,7 @@ class RWKV_UNetV3(nn.Module):
         dec1 = self._match_size(self.decoder3(torch.cat([dec2, enc2], dim=1)), enc1)
         dec0 = self.decoder4(torch.cat([dec1, enc1], dim=1))
         out = self.final_conv(dec0)
-        return torch.nan_to_num(out, nan=0.0, posinf=1e4, neginf=-1e4)
+        return _onnx_safe_nan_to_num(out, low=-1e4, high=1e4)
 
 
 def rwkv_unetv3(input_channel=3, num_classes=1, img_size=256, **kwargs):

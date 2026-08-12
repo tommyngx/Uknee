@@ -33,10 +33,22 @@ print(f"Set CUDA_VISIBLE_DEVICES to {os.environ['CUDA_VISIBLE_DEVICES']}")
 
 
 import random
+import warnings
 from tqdm import tqdm
 import numpy as np
 import torch
 import torch.nn as nn
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"`torch\.cuda\.amp\.autocast\(args\.\.\.\)` is deprecated.*",
+    category=FutureWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"nll_loss2d_forward_out_cuda_template does not have a deterministic implementation.*",
+    category=UserWarning,
+)
 
 torch.set_num_threads(cpu_num)
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -540,9 +552,12 @@ def _export_best_segment_onnx(args, model, weights_dir, run_dir, class_names, lo
         temporary.unlink(missing_ok=True)
     record["path"] = onnx_path.relative_to(run_dir).as_posix()
     logger.info(
-        "ONNX export ready: %s (max_abs_diff=%s)",
+        "ONNX export ready: %s (max_abs=%.6g mean_abs=%.6g p99_abs=%.6g mask_agreement=%.4f%%)",
         onnx_path,
         record["parity"]["max_abs_diff"],
+        record["parity"]["mean_abs_diff"],
+        record["parity"]["p99_abs_diff"],
+        100.0 * record["parity"]["postprocess_agreement"],
     )
     return record
 
@@ -847,7 +862,8 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
 
 def main(argv=None):
     args = parse_arguments(argv)
-    print(f"\n=== Testing model: {args.model} ===")
+    if os.environ.get("UKNEE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
+        print(f"\n=== Testing model: {args.model} ===")
     _validate_runtime_config(args)
 
     exp_save_dir, log_dir, history_writer, logger, model = init_dir(args)
@@ -863,6 +879,12 @@ def main(argv=None):
         if args.zero_shot_dataset_name:
             zero_shot(args, logger, model)
         print(f"Model {args.model} training finished successfully")
+    except KeyboardInterrupt:
+        logger.warning(
+            "Training interrupted by user. The latest completed-epoch checkpoint is preserved; "
+            "restart with --resume to continue."
+        )
+        return {"status": "interrupted", "run_dir": exp_save_dir}
     except Exception as e:
         logger.exception("Training failed with an exception.")
         traceback.print_exc()

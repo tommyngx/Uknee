@@ -47,6 +47,20 @@ class _AlwaysClassTwo(torch.nn.Module):
         return logits
 
 
+class _TraceMutatingSegment(torch.nn.Module):
+    """Emulate a legacy exporter changing module behavior during tracing."""
+
+    def __init__(self):
+        super().__init__()
+        self.trace_seen = False
+
+    def forward(self, images):
+        output = images[:, :1].repeat(1, 3, 1, 1) + float(self.trace_seen)
+        if torch.onnx.is_in_onnx_export():
+            self.trace_seen = True
+        return output
+
+
 class SegmentONNXAndPreprocessingTests(unittest.TestCase):
     def test_parity_accepts_small_backend_drift_but_rejects_changed_masks(self):
         expected = np.zeros((1, 3, 16, 16), dtype=np.float32)
@@ -61,6 +75,14 @@ class SegmentONNXAndPreprocessingTests(unittest.TestCase):
         changed_statistics = _parity_statistics(expected, changed, num_classes=3)
         with self.assertRaisesRegex(RuntimeError, "postprocess_agreement"):
             _validate_parity_statistics(changed_statistics)
+
+    def test_parity_reference_is_captured_before_legacy_trace_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "trace_mutating.onnx"
+            args = SimpleNamespace(model="RWKV_UNetV3", img_size=16, input_channel=3, num_classes=3)
+            record = export_segment_onnx(_TraceMutatingSegment(), args, path, validate=True)
+            self.assertTrue(record["parity"]["validated"])
+            self.assertEqual(record["parity"]["postprocess_agreement"], 1.0)
 
     def test_onnx_filename_uses_portable_underscores(self):
         self.assertEqual(onnx_filename("RWKV-UNet V6"), "rwkv_unet_v6.onnx")
