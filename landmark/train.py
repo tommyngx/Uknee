@@ -115,6 +115,8 @@ def resolve_dataset_config(value: str | Path, project_root: str | Path) -> Path:
         return dataset_path
 
     preferred = [
+        dataset_path / "data_points.yaml",
+        dataset_path / "data_pose.yaml",
         dataset_path / "data.yaml",
         dataset_path / "dataset.yaml",
         dataset_path / f"{dataset_path.name}.yaml",

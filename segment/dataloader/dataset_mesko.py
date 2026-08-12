@@ -51,10 +51,26 @@ def _index_files(directory):
     return {path.stem: path for path in _list_image_files(directory)}
 
 
+def _find_dataset_yaml(base_dir):
+    candidates = [
+        base_dir / "data_unet.yaml",
+        base_dir / "data_segment.yaml",
+        base_dir / "unet.yaml",
+        base_dir / "data.yaml",
+        base_dir / "dataset.yaml",
+        base_dir / f"{base_dir.name}.yaml",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    yamls = sorted(base_dir.glob("*.y*ml"))
+    return yamls[0] if yamls else base_dir / "data.yaml"
+
+
 def _load_class_info(base_dir):
     classes_path = base_dir / "classes.json"
     summary_path = base_dir / "summary.json"
-    data_yaml_path = base_dir / "data.yaml"
+    data_yaml_path = _find_dataset_yaml(base_dir)
 
     if classes_path.is_file():
         with classes_path.open("r", encoding="utf-8") as file:
@@ -83,7 +99,7 @@ def _load_class_info(base_dir):
 
 
 def _split_dirs_from_yaml(base_dir, split):
-    data_yaml = _load_yaml(base_dir / "data.yaml")
+    data_yaml = _load_yaml(_find_dataset_yaml(base_dir))
     image_value = data_yaml.get(split)
     masks = data_yaml.get("masks", {})
     mask_value = masks.get(split) if isinstance(masks, dict) else None
@@ -122,7 +138,7 @@ def is_mesko_dataset(base_dir, dataset_name=""):
     return (
         (base_path / "images" / "train").is_dir()
         and (base_path / "masks" / "train").is_dir()
-        and ((base_path / "classes.json").is_file() or (base_path / "data.yaml").is_file())
+        and ((base_path / "classes.json").is_file() or _find_dataset_yaml(base_path).is_file())
     )
 
 
