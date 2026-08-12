@@ -34,6 +34,12 @@ UKNEE_SOURCE = "/path/to/Uknee"
 `--project` là thư mục data/output, không phải source code. Nếu chưa cài
 package thì cần `%cd /path/to/Uknee` trước khi dùng `-m landmark.train`.
 
+`--gpu '[0,1]'` được áp dụng trước khi import PyTorch và đặt
+`CUDA_VISIBLE_DEVICES=0,1`. Sau dòng khởi động, log phải báo
+`torch.cuda.device_count(): 2`/hai CUDA device. Nếu scheduler của trường chỉ
+cấp một GPU, cần yêu cầu hai GPU từ scheduler trước; `nvidia-smi` có thể vẫn
+hiện card mà job không được phép sử dụng.
+
 ```bash
 python -m landmark.train \
   --model yolo26-pose-v9 \

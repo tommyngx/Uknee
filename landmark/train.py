@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -24,6 +25,17 @@ from uknee_cli import (
     resolve_project_root,
     safe_run_name,
 )
+
+# ``python -m landmark.train`` imports landmark/__init__.py first. That module
+# deliberately keeps PyTorch lazy, allowing an explicit CLI GPU list to become
+# visible before CUDA is initialized here.
+_gpu_bootstrap_parser = argparse.ArgumentParser(add_help=False)
+_gpu_bootstrap_parser.add_argument("--gpu", type=parse_gpu_ids, default=None)
+_gpu_bootstrap_args, _ = _gpu_bootstrap_parser.parse_known_args()
+if _gpu_bootstrap_args.gpu is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = (
+        "" if _gpu_bootstrap_args.gpu == [-1] else ",".join(map(str, _gpu_bootstrap_args.gpu))
+    )
 
 from landmark.utils.api import KneePose
 
