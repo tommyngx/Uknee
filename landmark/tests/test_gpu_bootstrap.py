@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +41,25 @@ class GpuBootstrapTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(result.stdout.strip(), "0,1")
+
+    def test_ddp_temp_file_injects_repository_before_landmark_import(self):
+        from landmark.core.dist import generate_ddp_file
+
+        class FakeTrainer:
+            def __init__(self):
+                self.args = SimpleNamespace(model="model.yaml", augmentations=None)
+                self.hub_session = SimpleNamespace(model_url="model.yaml")
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("landmark.core.dist.USER_CONFIG_DIR", Path(directory)):
+                generated = Path(generate_ddp_file(FakeTrainer()))
+                content = generated.read_text(encoding="utf-8")
+        path_insert = content.index("sys.path.insert")
+        trainer_import = content.index("from landmark.core")
+        self.assertLess(path_insert, trainer_import)
+        self.assertIn(str(REPOSITORY_ROOT), content)
 
 
 if __name__ == "__main__":

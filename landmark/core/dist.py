@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import USER_CONFIG_DIR
@@ -60,9 +61,19 @@ def generate_ddp_file(trainer: BaseTrainer) -> str:
 
         overrides["augmentations"] = [A.to_dict(t) for t in overrides["augmentations"]]
 
+    # torchrun executes this file from USER_CONFIG_DIR, not from the source
+    # checkout. Inject the checkout root before importing the trainer so
+    # editable installation/PYTHONPATH is not required on compute nodes.
+    repository_root = Path(__file__).resolve().parents[2]
     content = f"""
 # Ultralytics Multi-GPU training temp file (should be automatically deleted after use)
+import sys
 from pathlib import Path, PosixPath  # For model arguments stored as Path instead of str
+
+repository_root = Path({str(repository_root)!r})
+if str(repository_root) not in sys.path:
+    sys.path.insert(0, str(repository_root))
+
 overrides = {overrides}
 
 if __name__ == "__main__":
