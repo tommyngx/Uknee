@@ -81,6 +81,51 @@ class DetectionTrainingTests(unittest.TestCase):
         self.assertIn("from landmark.train_det import DetectionReportTrainer", content)
         self.assertNotIn("from __main__ import DetectionReportTrainer", content)
 
+    def test_ddp_validation_uses_rank_zero_plot_decision_on_every_rank(self):
+        from landmark.core.detect import DetectionValidator
+
+        rank_zero_validator = object.__new__(DetectionValidator)
+        rank_zero_validator.args = SimpleNamespace(plots=True)
+        rank_zero_validator.device = torch.device("cpu")
+        rank_one_validator = object.__new__(DetectionValidator)
+        rank_one_validator.args = SimpleNamespace(plots=True)
+        rank_one_validator.device = torch.device("cpu")
+        rank_zero_trainer = SimpleNamespace(
+            world_size=2,
+            stopper=SimpleNamespace(possible_stop=True),
+            epoch=337,
+            epochs=1000,
+        )
+        rank_one_trainer = SimpleNamespace(
+            world_size=2,
+            stopper=SimpleNamespace(possible_stop=False),
+            epoch=337,
+            epochs=1000,
+        )
+        wire = {}
+
+        def send_rank_zero_decision(tensor, src):
+            self.assertEqual(src, 0)
+            wire["plots"] = int(tensor.item())
+
+        def receive_rank_zero_decision(tensor, src):
+            self.assertEqual(src, 0)
+            tensor.fill_(wire["plots"])
+
+        with (
+            patch("landmark.core.validator.RANK", 0),
+            patch("landmark.core.validator.dist.broadcast", side_effect=send_rank_zero_decision),
+        ):
+            rank_zero_validator._sync_training_plots(rank_zero_trainer)
+        with (
+            patch("landmark.core.validator.RANK", 1),
+            patch("landmark.core.validator.dist.broadcast", side_effect=receive_rank_zero_decision),
+        ):
+            rank_one_validator._sync_training_plots(rank_one_trainer)
+
+        self.assertTrue(rank_zero_validator.args.plots)
+        self.assertTrue(rank_one_validator.args.plots)
+
     def test_ddp_parent_summary_uses_reloaded_best_model(self):
         with tempfile.TemporaryDirectory() as directory:
             save_dir = Path(directory)

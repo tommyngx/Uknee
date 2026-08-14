@@ -140,6 +140,18 @@ class BaseValidator:
         self.plots = {}
         self.callbacks = _callbacks or callbacks.get_default_callbacks()
 
+    def _sync_training_plots(self, trainer) -> None:
+        """Keep the per-epoch plotting decision identical on every DDP rank."""
+        plots = bool(self.args.plots and (trainer.stopper.possible_stop or trainer.epoch == trainer.epochs - 1))
+        if trainer.world_size > 1:
+            # ``stopper`` is advanced on rank 0 only, so its ``possible_stop`` flag is rank-local.
+            # Broadcast the rank-0 decision before any plot-only collectives (for example the
+            # confusion-matrix reduction) to prevent the ranks from entering different collectives.
+            plots_tensor = torch.tensor(plots if RANK == 0 else False, dtype=torch.uint8, device=self.device)
+            dist.broadcast(plots_tensor, src=0)
+            plots = bool(plots_tensor.item())
+        self.args.plots = plots
+
     @smart_inference_mode()
     def __call__(self, trainer=None, model=None):
         """Execute validation process, running inference on dataloader and computing performance metrics.
@@ -163,7 +175,7 @@ class BaseValidator:
                 model = model._orig_mod  # validate non-compiled original model to avoid issues
             model = model.float()
             self.loss = torch.zeros_like(trainer.loss_items, device=trainer.device)
-            self.args.plots &= trainer.stopper.possible_stop or (trainer.epoch == trainer.epochs - 1)
+            self._sync_training_plots(trainer)
             model.eval()
         else:
             if str(self.args.model).endswith(".yaml") and model is None:
