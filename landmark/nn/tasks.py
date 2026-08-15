@@ -320,16 +320,17 @@ class BaseModel(torch.nn.Module):
             m.strides = fn(m.strides)
         return self
 
-    def load(self, weights, verbose=True):
+    def load(self, weights, verbose=True, exclude=()):
         """Load weights into the model.
 
         Args:
             weights (dict | torch.nn.Module): The pre-trained weights to be loaded.
             verbose (bool, optional): Whether to log the transfer progress.
+            exclude (tuple[str, ...], optional): State-dict key fragments not to transfer.
         """
         model = weights["model"] if isinstance(weights, dict) else weights  # torchvision models are not dicts
         csd = model.float().state_dict()  # checkpoint state_dict as FP32
-        updated_csd = intersect_dicts(csd, self.state_dict())  # intersect
+        updated_csd = intersect_dicts(csd, self.state_dict(), exclude=exclude)  # intersect
         self.load_state_dict(updated_csd, strict=False)  # load
         len_updated_csd = len(updated_csd)
         first_conv = "model.0.conv.weight"  # hard-coded to yolo models for now

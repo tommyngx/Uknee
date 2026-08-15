@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import torch
 import yaml
@@ -18,6 +18,8 @@ from landmark.train_det import (
     prepare_detection_dataset,
     write_detection_summary,
 )
+from landmark.core.detect import DetectionTrainer
+from landmark.nn.modules.head import Detect
 from landmark.utils.exporting import KneeDetectionExportWrapper
 
 
@@ -70,6 +72,62 @@ class DetectionTrainingTests(unittest.TestCase):
         self.assertNotIn("aten::index", graph)
         self.assertIn("aten::gather", graph)
 
+    def test_end2end_topk_is_stable_for_saturated_pretrained_scores(self):
+        head = Detect(nc=2, end2end=True, ch=(8,))
+        head.export = True
+        scores = torch.full((1, 4, 2), 1.0)
+
+        selected_scores, classes, anchors = head.get_topk_index(scores, max_det=3)
+
+        self.assertEqual(selected_scores.flatten().tolist(), [1.0, 1.0, 1.0])
+        self.assertEqual(classes.flatten().tolist(), [0.0, 1.0, 0.0])
+        self.assertEqual(anchors.flatten().tolist(), [0, 0, 1])
+
+        class TopKGraph(torch.nn.Module):
+            def __init__(self, detect_head):
+                super().__init__()
+                self.detect_head = detect_head
+
+            def forward(self, values):
+                return self.detect_head.get_topk_index(values, max_det=3)
+
+        graph = str(torch.jit.trace(TopKGraph(head), scores).inlined_graph)
+        self.assertNotIn("aten::index", graph)
+        self.assertIn("aten::gather", graph)
+
+    def test_pretrained_classifier_is_not_transferred_across_class_taxonomies(self):
+        head = Detect(nc=2, end2end=True, ch=(8,))
+        fake_model = SimpleNamespace(
+            model=torch.nn.ModuleList([torch.nn.Identity(), head]),
+            load=MagicMock(),
+        )
+        source = SimpleNamespace(names={0: "cat", 1: "dog"})
+        trainer = object.__new__(DetectionTrainer)
+        trainer.data = {"nc": 2, "channels": 3, "names": {0: "RightKnee", 1: "LeftKnee"}}
+
+        with patch("landmark.core.detect.DetectionModel", return_value=fake_model):
+            result = trainer.get_model(cfg="model.yaml", weights=source, verbose=False)
+
+        self.assertIs(result, fake_model)
+        excluded = fake_model.load.call_args.kwargs["exclude"]
+        self.assertTrue(any(".cv3." in prefix for prefix in excluded))
+        self.assertTrue(any(".one2one_cv3." in prefix for prefix in excluded))
+
+    def test_pretrained_classifier_can_transfer_for_the_same_taxonomy(self):
+        head = Detect(nc=2, end2end=True, ch=(8,))
+        fake_model = SimpleNamespace(
+            model=torch.nn.ModuleList([torch.nn.Identity(), head]),
+            load=MagicMock(),
+        )
+        source = SimpleNamespace(names={0: "right_knee", 1: "left-knee"})
+        trainer = object.__new__(DetectionTrainer)
+        trainer.data = {"nc": 2, "channels": 3, "names": {0: "RightKnee", 1: "LeftKnee"}}
+
+        with patch("landmark.core.detect.DetectionModel", return_value=fake_model):
+            trainer.get_model(cfg="model.yaml", weights=source, verbose=False)
+
+        self.assertEqual(fake_model.load.call_args.kwargs["exclude"], ())
+
     def test_detection_report_trainer_has_stable_ddp_import(self):
         from landmark.core.dist import generate_ddp_file
 
@@ -85,6 +143,16 @@ class DetectionTrainingTests(unittest.TestCase):
                 content = generated.read_text(encoding="utf-8")
         self.assertIn("from landmark.train_det import DetectionReportTrainer", content)
         self.assertNotIn("from __main__ import DetectionReportTrainer", content)
+
+    def test_detection_checkpoint_save_defers_onnx_until_training_completes(self):
+        trainer = object.__new__(DetectionReportTrainer)
+        with (
+            patch("landmark.core.trainer.BaseTrainer.save_model", return_value=True) as save_checkpoint,
+            patch.object(trainer, "_export_detection_onnx") as export_onnx,
+        ):
+            self.assertTrue(trainer.save_model())
+        save_checkpoint.assert_called_once_with()
+        export_onnx.assert_not_called()
 
     def test_ddp_validation_uses_rank_zero_plot_decision_on_every_rank(self):
         from landmark.core.detect import DetectionValidator

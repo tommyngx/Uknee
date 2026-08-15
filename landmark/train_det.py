@@ -540,15 +540,8 @@ class DetectionReportTrainer(DetectionTrainer):
         )(wrapper)
 
     def save_model(self):
-        """Keep an ONNX deployment copy synchronized with best.pt during DDP."""
-        best_updated = self.best_fitness == self.fitness
-        saved = super().save_model()
-        if saved and best_updated and RANK in {-1, 0}:
-            try:
-                self._export_detection_onnx()
-            except Exception as error:
-                LOGGER.warning(f"Detection ONNX export deferred until training completes: {error}")
-        return saved
+        """Save checkpoints; detection ONNX export is intentionally deferred until training completes."""
+        return super().save_model()
 
     def final_eval(self) -> None:
         """Run native best-checkpoint validation and persist its rich detection report on rank zero."""

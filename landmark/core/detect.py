@@ -142,6 +142,32 @@ from landmark.core.plotting import plot_images, plot_labels
 from landmark.core.torch_utils import torch_distributed_zero_first, unwrap_model
 
 
+def _normalized_class_names(names) -> tuple[str, ...]:
+    """Normalize class-name mappings for safe pretrained-head comparison."""
+    if isinstance(names, dict):
+        values = [names[index] for index in sorted(names, key=int)]
+    elif isinstance(names, (list, tuple)):
+        values = list(names)
+    else:
+        return ()
+    return tuple("".join(character for character in str(value).casefold() if character.isalnum()) for value in values)
+
+
+def _classification_output_prefixes(model: DetectionModel) -> tuple[str, ...]:
+    """Return final classification-convolution prefixes for all end-to-end branches."""
+    head_index = len(model.model) - 1
+    head = model.model[-1]
+    prefixes = []
+    for branch_name in ("cv3", "one2one_cv3"):
+        branch = getattr(head, branch_name, None)
+        if branch is None:
+            continue
+        for level, block in enumerate(branch):
+            output_index = len(block) - 1 if isinstance(block, nn.Sequential) else 0
+            prefixes.append(f"model.{head_index}.{branch_name}.{level}.{output_index}.")
+    return tuple(prefixes)
+
+
 class DetectionTrainer(BaseTrainer):
     """A class extending the BaseTrainer class for training based on a detection model.
 
@@ -315,7 +341,29 @@ class DetectionTrainer(BaseTrainer):
         """
         model = DetectionModel(cfg, nc=self.data["nc"], ch=self.data["channels"], verbose=verbose and RANK == -1)
         if weights:
-            model.load(weights)
+            source = weights.get("model") if isinstance(weights, dict) else weights
+            source_names = _normalized_class_names(getattr(source, "names", None))
+            target_names = _normalized_class_names(self.data.get("names"))
+            exclude = ()
+            source_path = getattr(
+                source,
+                "pt_path",
+                getattr(getattr(self, "args", None), "pretrained", "<in-memory>"),
+            )
+            if target_names and source_names != target_names:
+                exclude = _classification_output_prefixes(model)
+                source_summary = f"{len(source_names)} source" if source_names else "missing source taxonomy"
+                LOGGER.info(
+                    f"Pretrained checkpoint {source_path}: class names differ from the detection dataset "
+                    f"({source_summary} vs {len(target_names)} target); "
+                    "reinitializing class-output layers while transferring backbone and box weights."
+                )
+            elif target_names:
+                LOGGER.info(
+                    f"Pretrained checkpoint {source_path}: class taxonomy matches the detection dataset; "
+                    "transferring class-output layers."
+                )
+            model.load(weights, exclude=exclude)
         return model
 
     def get_validator(self):

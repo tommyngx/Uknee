@@ -232,6 +232,16 @@ class Detect(nn.Module):
         boxes = boxes.gather(dim=1, index=idx.repeat(1, 1, 4))
         return torch.cat([boxes, scores, conf], dim=-1)
 
+    @staticmethod
+    def _stable_topk_indices(values: torch.Tensor, k: int) -> torch.Tensor:
+        """Return deterministic top-k indices, preferring the lower index for tied float scores."""
+        count = values.shape[-1]
+        # Float32/float16 model scores can tie after sigmoid saturation. Rank in
+        # float64 with a sub-float32 perturbation so PyTorch and ONNX Runtime
+        # choose the same rows without changing the returned confidences.
+        tie_break = torch.linspace(0.0, 1e-12, steps=count, device=values.device, dtype=torch.float64)
+        return (values.to(torch.float64) - tie_break).topk(k, dim=-1).indices
+
     def get_topk_index(self, scores: torch.Tensor, max_det: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Get top-k indices from scores.
 
@@ -242,19 +252,23 @@ class Detect(nn.Module):
         Returns:
             (torch.Tensor, torch.Tensor, torch.Tensor): Top scores, class indices, and filtered indices.
         """
-        batch_size, anchors, nc = scores.shape  # i.e. shape(16,8400,80)
+        _, anchors, nc = scores.shape  # i.e. shape(16,8400,80)
         # Use max_det directly during export for TensorRT compatibility (requires k to be constant),
         # otherwise use min(max_det, anchors) for safety with small inputs during Python inference
         k = max_det if self.export else min(max_det, anchors)
         if self.agnostic_nms:
             scores, labels = scores.max(dim=-1, keepdim=True)
-            scores, indices = scores.topk(k, dim=1)
-            labels = labels.gather(1, indices)
-            return scores, labels, indices
-        ori_index = scores.max(dim=-1)[0].topk(k)[1].unsqueeze(-1)
+            indices = self._stable_topk_indices(scores.squeeze(-1), k)
+            gather_index = indices[..., None]
+            scores = scores.gather(1, gather_index)
+            labels = labels.gather(1, gather_index)
+            return scores, labels, gather_index
+        ori_index = self._stable_topk_indices(scores.max(dim=-1)[0], k).unsqueeze(-1)
         scores = scores.gather(dim=1, index=ori_index.repeat(1, 1, nc))
-        scores, index = scores.flatten(1).topk(k)
-        idx = ori_index[torch.arange(batch_size)[..., None], index // nc]  # original index
+        flat_scores = scores.flatten(1)
+        index = self._stable_topk_indices(flat_scores, k)
+        scores = flat_scores.gather(1, index)
+        idx = ori_index.gather(1, (index // nc).unsqueeze(-1))
         return scores[..., None], (index % nc)[..., None].float(), idx
 
     def fuse(self) -> None:

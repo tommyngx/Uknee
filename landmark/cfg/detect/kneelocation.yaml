@@ -49,8 +49,8 @@ mixup: 0.0
 cutmix: 0.0
 copy_paste: 0.0
 
-# Match the reference artifact contract. Disable explicitly from CLI with
-# --no-auto-export-onnx when only checkpoints are required.
+# Export the final best checkpoint once training completes. Disable explicitly
+# with --no-auto-export-onnx when only PyTorch checkpoints are required.
 auto_export_onnx: true
 dynamic: false
 simplify: true
