@@ -1,7 +1,7 @@
 # KneeLocation detection training preset, adapted from Ref/args_previous.yaml.
 # This is an override file consumed by landmark.train_det, not a dataset YAML.
-epochs: 500
-patience: 100
+epochs: 1000
+patience: 200
 batch: 16
 imgsz: [640, 640]
 workers: 8
@@ -28,7 +28,7 @@ save: true
 save_period: -1
 rect: false
 cos_lr: false
-close_mosaic: 10
+close_mosaic: 500
 multi_scale: 0.0
 
 # X-ray-safe detection augmentation. Horizontal flipping remains disabled
@@ -44,7 +44,7 @@ perspective: 0.0
 flipud: 0.0
 fliplr: 0.0
 bgr: 0.0
-mosaic: 1.0
+mosaic: 0.1
 mixup: 0.0
 cutmix: 0.0
 copy_paste: 0.0
