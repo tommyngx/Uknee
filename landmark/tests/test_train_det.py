@@ -144,15 +144,41 @@ class DetectionTrainingTests(unittest.TestCase):
         self.assertIn("from landmark.train_det import DetectionReportTrainer", content)
         self.assertNotIn("from __main__ import DetectionReportTrainer", content)
 
-    def test_detection_checkpoint_save_defers_onnx_until_training_completes(self):
+    def test_detection_checkpoint_save_exports_first_best_then_waits_for_interval(self):
         trainer = object.__new__(DetectionReportTrainer)
+        trainer.args = SimpleNamespace(auto_export_onnx=True, onnx_export_interval=10)
+        trainer.best_fitness = trainer.fitness = 0.5
+        trainer.epoch = 0
+        trainer.epochs = 100
         with (
             patch("landmark.core.trainer.BaseTrainer.save_model", return_value=True) as save_checkpoint,
             patch.object(trainer, "_export_detection_onnx") as export_onnx,
         ):
             self.assertTrue(trainer.save_model())
-        save_checkpoint.assert_called_once_with()
-        export_onnx.assert_not_called()
+            trainer.best_fitness = trainer.fitness = 0.6
+            trainer.epoch = 1
+            self.assertTrue(trainer.save_model())
+        self.assertEqual(save_checkpoint.call_count, 2)
+        export_onnx.assert_called_once_with()
+
+    def test_detection_checkpoint_save_refreshes_pending_best_at_interval(self):
+        trainer = object.__new__(DetectionReportTrainer)
+        trainer.args = SimpleNamespace(auto_export_onnx=True, onnx_export_interval=10)
+        trainer.best_fitness = trainer.fitness = 0.5
+        trainer.epoch = 0
+        trainer.epochs = 100
+        with (
+            patch("landmark.core.trainer.BaseTrainer.save_model", return_value=True),
+            patch.object(trainer, "_export_detection_onnx") as export_onnx,
+        ):
+            trainer.save_model()
+            trainer.best_fitness = trainer.fitness = 0.6
+            trainer.epoch = 4
+            trainer.save_model()
+            trainer.fitness = 0.55
+            trainer.epoch = 9
+            trainer.save_model()
+        self.assertEqual(export_onnx.call_count, 2)
 
     def test_ddp_validation_uses_rank_zero_plot_decision_on_every_rank(self):
         from landmark.core.detect import DetectionValidator

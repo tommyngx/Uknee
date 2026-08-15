@@ -83,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--auto-export-onnx", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument(
+        "--onnx-export-interval",
+        type=int,
+        default=None,
+        help="Refresh ONNX every N epochs when best.pt changed; epoch 1 and training completion are always handled",
+    )
+    parser.add_argument(
         "overrides",
         nargs="*",
         metavar="KEY=VALUE",
@@ -540,8 +546,26 @@ class DetectionReportTrainer(DetectionTrainer):
         )(wrapper)
 
     def save_model(self):
-        """Save checkpoints; detection ONNX export is intentionally deferred until training completes."""
-        return super().save_model()
+        """Save checkpoints and periodically refresh ONNX only when the best checkpoint changed."""
+        best_updated = self.best_fitness == self.fitness
+        saved = super().save_model()
+        if not saved or RANK not in {-1, 0} or not bool(getattr(self.args, "auto_export_onnx", True)):
+            return saved
+
+        if best_updated:
+            self._pending_onnx_best_epoch = int(self.epoch)
+        pending_epoch = int(getattr(self, "_pending_onnx_best_epoch", -1))
+        exported_epoch = int(getattr(self, "_last_exported_onnx_best_epoch", -1))
+        epoch_number = int(self.epoch) + 1
+        interval = max(int(getattr(self.args, "onnx_export_interval", 10)), 1)
+        scheduled = epoch_number == 1 or epoch_number % interval == 0 or epoch_number >= int(self.epochs)
+        if pending_epoch > exported_epoch and scheduled:
+            try:
+                self._export_detection_onnx()
+                self._last_exported_onnx_best_epoch = pending_epoch
+            except Exception as error:
+                LOGGER.warning(f"Detection ONNX export deferred to the next interval/finalization: {error}")
+        return saved
 
     def final_eval(self) -> None:
         """Run native best-checkpoint validation and persist its rich detection report on rank zero."""

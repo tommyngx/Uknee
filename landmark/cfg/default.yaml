@@ -31,6 +31,7 @@ close_mosaic: 10
 resume: false
 amp: true
 auto_export_onnx: true
+onnx_export_interval: 10
 aug_strategy: xray
 gpu_ids: []
 dataset_source:

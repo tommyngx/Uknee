@@ -21,9 +21,9 @@ artifact = model.export(format="onnx", imgsz=640)
 Mọi giá trị truyền từ CLI sẽ ghi đè cấu hình mặc định trong
 `cfg/default.yaml`. Kết quả luôn nằm tại `<project>/runs/<name>`; `weights/`,
 `samples/`, `args.yaml`, `summary.yaml` và ONNX nằm bên trong run đó.
-Pose đồng bộ ONNX mỗi khi `weights/best.pt` được cập nhật; detection chỉ
-export ONNX một lần từ best checkpoint sau khi train xong. Ảnh sample có chiều
-rộng 800 px và giữ nguyên tỷ lệ.
+Pose đồng bộ ONNX mỗi khi `weights/best.pt` được cập nhật. Detection export
+best đầu tiên, sau đó mặc định mỗi 10 epoch khi có best mới, và hoàn tất từ
+best checkpoint cuối. Ảnh sample có chiều rộng 800 px và giữ nguyên tỷ lệ.
 
 Nếu chạy từ notebook/thư mục ngoài repository, cài source một lần bằng đúng
 Python của kernel:
@@ -138,8 +138,9 @@ python -m landmark.train_det \
 
 Outputs use the same `<project>/runs/<name>` convention, including `weights/`,
 `samples/`, `args.yaml`, `results.csv`, the detection dashboard/metric report,
-validation plots, ONNX and `summary.yaml`. Detection ONNX is exported once from
-the final `best.pt`, not after each epoch. The detection preset is used by
+validation plots, ONNX and `summary.yaml`. Detection ONNX is exported for the
+first best checkpoint, then every `--onnx-export-interval` epochs only when the
+best changed, and finalized after training. The detection preset is used by
 default and can be overridden from the CLI (for example `--epochs 300`). Medical
 landmark metrics are not emitted for detection. Use `--no-auto-export-onnx` when
 only PyTorch checkpoints are required.
