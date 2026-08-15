@@ -129,15 +129,27 @@ def seed_torch(seed):
 def parse_arguments(argv=None):
     args = parse_segment_args(argv)
     try:
+        from segment.dataloader.dataset_pheno import (
+            infer_pheno_num_classes,
+            is_pheno_dataset,
+        )
         from segment.dataloader.dataset_mesko import infer_mesko_num_classes, is_mesko_dataset
 
-        if is_mesko_dataset(args.base_dir, args.dataset_name):
+        if is_pheno_dataset(args.base_dir, args.dataset_name):
+            inferred_num_classes = infer_pheno_num_classes(args.base_dir)
+            if inferred_num_classes and inferred_num_classes > 1 and int(args.num_classes) != inferred_num_classes:
+                print(
+                    f"Auto-updating num_classes from {args.num_classes} to "
+                    f"{inferred_num_classes} based on Pheno segmentation metadata"
+                )
+                args.num_classes = inferred_num_classes
+        elif is_mesko_dataset(args.base_dir, args.dataset_name):
             inferred_num_classes = infer_mesko_num_classes(args.base_dir)
             if inferred_num_classes and inferred_num_classes > 1 and int(args.num_classes) != inferred_num_classes:
                 print(f"Auto-updating num_classes from {args.num_classes} to {inferred_num_classes} based on MESKO dataset metadata")
                 args.num_classes = inferred_num_classes
     except Exception as exc:
-        print(f"Could not auto-configure MESKO num_classes: {exc}")
+        print(f"Could not auto-configure segmentation num_classes: {exc}")
     seed_torch(args.seed)
     return args
 

@@ -25,6 +25,7 @@ from segment.dataloader.dataset import (
     PH2Dataset,
 )
 from segment.dataloader.dataset_mesko import Mesko5SegDataset, is_mesko_dataset
+from segment.dataloader.dataset_pheno import PhenoSegDataset, is_pheno_dataset
 from segment.utils.medsegbench import INFO as MedSegBench_dataset_name_dict
 from segment.utils.medsegbench import get_MedSegBench_dataset
 import torch
@@ -88,6 +89,19 @@ def getDataloader(args):
         db_train = CHASEDB1Dataset(base_dir=args.base_dir, mode="train", transform=train_transform)
         db_val = CHASEDB1Dataset(base_dir=args.base_dir, mode="val", transform=val_transform)
         db_test = CHASEDB1Dataset(base_dir=args.base_dir, mode="test", transform=val_transform)
+    elif is_pheno_dataset(args.base_dir, args.dataset_name):
+        db_train = PhenoSegDataset(
+            base_dir=args.base_dir,
+            mode="train",
+            transform=train_transform,
+            num_classes=args.num_classes,
+        )
+        db_val = PhenoSegDataset(
+            base_dir=args.base_dir,
+            mode="val",
+            transform=val_transform,
+            num_classes=args.num_classes,
+        )
     elif is_mesko_dataset(args.base_dir, args.dataset_name):
         db_train = Mesko5SegDataset(
             base_dir=args.base_dir,
@@ -210,6 +224,13 @@ def getZeroShotDataloader(args):
         db_val = PH2Dataset(args.zero_shot_base_dir, mode='test', transform=val_transform)
     elif "CHASEDB1" in args.zero_shot_base_dir:
         db_val = CHASEDB1Dataset(base_dir=args.zero_shot_base_dir, mode="test", transform=val_transform)
+    elif is_pheno_dataset(args.zero_shot_base_dir, args.zero_shot_dataset_name):
+        db_val = PhenoSegDataset(
+            base_dir=args.zero_shot_base_dir,
+            mode="test",
+            transform=val_transform,
+            num_classes=args.num_classes,
+        )
     elif is_mesko_dataset(args.zero_shot_base_dir, args.zero_shot_dataset_name):
         db_val = Mesko5SegDataset(
             base_dir=args.zero_shot_base_dir,

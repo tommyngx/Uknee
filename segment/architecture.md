@@ -30,6 +30,8 @@ segment.cli -> segment.main
 - `models/__init__.py`: `MODEL_REGISTRY`, lazy imports, model construction.
 - `dataloader/dataloader.py`: dataset selection and loader construction.
 - `dataloader/dataset_mesko.py`: MESKO multiclass image/mask pairing.
+- `dataloader/dataset_pheno.py`: PhenoX multiclass image/mask pairing; class
+  IDs come from segmentation metadata or masks, not landmark YAML.
 - `deploy/app_function.py`: reusable inference and preprocessing API.
 
 ## Ownership map
@@ -66,4 +68,3 @@ python -m unittest tests.code.test_segment_reporting -v
 python -m unittest tests.code.test_segment_onnx_and_preprocessing -v
 python -m unittest discover -s tests/code -p 'test_segment*.py' -v
 ```
-
