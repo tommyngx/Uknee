@@ -56,12 +56,18 @@ class KneePoseExportWrapper(nn.Module):
         classes = predictions[..., 5]
         confidence = predictions[..., 4]
         rows, present = [], []
-        batch = torch.arange(predictions.shape[0], device=predictions.device)
         for class_id in range(4):
             matches = classes == float(class_id)
             masked = torch.where(matches, confidence, confidence.new_full((), -1.0))
             score, index = masked.max(dim=1)
-            selected = predictions[batch, index]
+            # Express the non-negative argmax selection along the detection
+            # dimension directly. Tensor advanced indexing lowers to
+            # aten::index, whose legacy ONNX symbolic emits a warning because
+            # it cannot prove that the indices are non-negative.
+            selected = predictions.gather(
+                1,
+                index[:, None, None].expand(-1, 1, predictions.shape[-1]),
+            ).squeeze(1)
             valid = matches.any(dim=1) & (score >= self.confidence)
             selected = torch.where(valid[:, None], selected, torch.zeros_like(selected))
             rows.append(selected)
