@@ -51,19 +51,24 @@ class DetectionTrainingTests(unittest.TestCase):
         config = _load_yaml(DEFAULT_CFG)
         self.assertEqual(config["pretrained"], "yolo26m.pt")
         self.assertEqual(config["optimizer"], "auto")
-        self.assertEqual(config["epochs"], 500)
-        self.assertEqual(config["patience"], 100)
+        self.assertEqual(config["epochs"], 1000)
+        self.assertEqual(config["patience"], 200)
         self.assertEqual(config["fliplr"], 0.0)
         self.assertNotIn("pose", config)
 
     def test_detection_export_contract_selects_one_box_per_class(self):
         wrapper = KneeDetectionExportWrapper(_FakeDetectionModel(), confidence=0.25).eval()
-        detections, count, canonical = wrapper(torch.zeros(1, 3, 32, 32))
-        self.assertEqual(tuple(detections.shape), (1, 3, 6))
-        self.assertEqual(count.tolist(), [2])
-        self.assertEqual(tuple(canonical.shape), (1, 2, 4))
+        images = torch.zeros(2, 3, 32, 32)
+        detections, count, canonical = wrapper(images)
+        self.assertEqual(tuple(detections.shape), (2, 3, 6))
+        self.assertEqual(count.tolist(), [2, 2])
+        self.assertEqual(tuple(canonical.shape), (2, 2, 4))
         self.assertEqual(canonical[0, 0].tolist(), [1.0, 2.0, 10.0, 12.0])
         self.assertEqual(canonical[0, 1].tolist(), [4.0, 5.0, 14.0, 16.0])
+
+        graph = str(torch.jit.trace(wrapper, images).inlined_graph)
+        self.assertNotIn("aten::index", graph)
+        self.assertIn("aten::gather", graph)
 
     def test_detection_report_trainer_has_stable_ddp_import(self):
         from landmark.core.dist import generate_ddp_file

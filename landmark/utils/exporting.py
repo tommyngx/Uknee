@@ -131,13 +131,19 @@ class KneeDetectionExportWrapper(nn.Module):
         detections = predictions[..., :6]
         valid = detections[..., 4] >= self.confidence
         detections = torch.where(valid[..., None], detections, torch.zeros_like(detections))
-        batch = torch.arange(detections.shape[0], device=detections.device)
         class_boxes = []
         for class_id in range(self.nc):
             matches = valid & (detections[..., 5] == float(class_id))
             scores = torch.where(matches, detections[..., 4], detections.new_full((), -1.0))
             _, index = scores.max(dim=1)
-            selected = detections[batch, index, :4]
+            # ``detections[batch, index]`` lowers to aten::index and makes the
+            # legacy ONNX exporter warn about potentially-negative indices.
+            # Argmax indices are non-negative, but gather expresses that
+            # contract directly and exports cleanly across opset 17 runtimes.
+            selected = detections[..., :4].gather(
+                1,
+                index[:, None, None].expand(-1, 1, 4),
+            ).squeeze(1)
             class_boxes.append(torch.where(matches.any(dim=1, keepdim=True), selected, torch.zeros_like(selected)))
         canonical_boxes = torch.stack(class_boxes, dim=1)
         return detections, valid.sum(dim=1).to(torch.int64), canonical_boxes

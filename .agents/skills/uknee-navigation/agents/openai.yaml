@@ -1,0 +1,4 @@
+interface:
+  display_name: "Uknee Navigation"
+  short_description: "Route Uknee work with minimal context"
+  default_prompt: "Use $uknee-navigation to inspect and change the relevant Uknee subsystem without loading legacy code."

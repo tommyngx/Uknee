@@ -169,7 +169,15 @@ class YOLODataset(BaseDataset):
             (list[dict]): List of label dictionaries, each containing information about an image and its annotations.
         """
         self.label_files = img2label_paths(self.im_files)
-        cache_path = Path(self.label_files[0]).parent.with_suffix(".cache")
+        # Split manifests can point into the same physical labels directory.
+        # Key their caches by manifest so train.txt and val.txt cannot
+        # repeatedly overwrite the same labels/train.cache file.
+        manifest = Path(self.img_path) if isinstance(self.img_path, (str, Path)) else None
+        cache_path = (
+            manifest.with_suffix(".cache")
+            if manifest is not None and manifest.is_file() and manifest.suffix.lower() == ".txt"
+            else Path(self.label_files[0]).parent.with_suffix(".cache")
+        )
         try:
             cache, exists = load_dataset_cache_file(cache_path), True  # attempt to load a *.cache file
             assert cache["version"] == DATASET_CACHE_VERSION  # matches current version
