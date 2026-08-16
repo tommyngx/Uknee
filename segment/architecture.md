@@ -55,8 +55,9 @@ segment.cli -> segment.main
   errors.
 - Keep mask class IDs discrete through augmentation and resizing.
 - Validate configured/inferred class counts before training multiclass MESKO.
-- Keep checkpoint architecture checks strict; do not partially load a mismatched
-  model silently.
+- Keep resume checkpoint architecture checks strict. Pretrained fine-tuning may
+  skip name/shape mismatches, but must report loaded, missing, mismatched, and
+  unexpected tensor counts explicitly.
 - Validate PyTorch/ONNX numerical parity and embedded preprocessing metadata
   after export changes.
 

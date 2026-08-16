@@ -328,23 +328,95 @@ class BaseModel(torch.nn.Module):
             verbose (bool, optional): Whether to log the transfer progress.
             exclude (tuple[str, ...], optional): State-dict key fragments not to transfer.
         """
-        model = weights["model"] if isinstance(weights, dict) else weights  # torchvision models are not dicts
-        csd = model.float().state_dict()  # checkpoint state_dict as FP32
-        updated_csd = intersect_dicts(csd, self.state_dict(), exclude=exclude)  # intersect
+        candidate = weights
+        if isinstance(weights, dict):
+            candidate = None
+            for key in ("ema", "model", "state_dict"):
+                if weights.get(key) is not None:
+                    candidate = weights[key]
+                    break
+            if candidate is None and all(isinstance(value, torch.Tensor) for value in weights.values()):
+                candidate = weights
+        if isinstance(candidate, torch.nn.Module):
+            csd = candidate.float().state_dict()
+        elif isinstance(candidate, dict) and all(isinstance(value, torch.Tensor) for value in candidate.values()):
+            csd = candidate
+        else:
+            raise TypeError("Pretrained weights must contain an ema, model, or tensor state_dict.")
+
+        destination = self.state_dict()
+        variants = [dict(csd)]
+        current = dict(csd)
+        for _ in range(3):
+            prefix = next(
+                (item for item in ("module.", "_orig_mod.") if current and all(k.startswith(item) for k in current)),
+                None,
+            )
+            if prefix is None:
+                break
+            current = {key.removeprefix(prefix): value for key, value in current.items()}
+            variants.append(current)
+        csd = max(
+            variants,
+            key=lambda state: sum(
+                key in destination and value.shape == destination[key].shape
+                for key, value in state.items()
+            ),
+        )
+
+        updated_csd = intersect_dicts(csd, destination, exclude=exclude)
         self.load_state_dict(updated_csd, strict=False)  # load
         len_updated_csd = len(updated_csd)
+        loaded_keys = set(updated_csd)
         first_conv = "model.0.conv.weight"  # hard-coded to yolo models for now
         # mostly used to boost multi-channel training
         state_dict = self.state_dict()
-        if first_conv not in updated_csd and first_conv in state_dict:
+        if first_conv not in updated_csd and first_conv in state_dict and first_conv in csd:
             c1, c2, h, w = state_dict[first_conv].shape
             cc1, cc2, ch, cw = csd[first_conv].shape
             if ch == h and cw == w:
                 c1, c2 = min(c1, cc1), min(c2, cc2)
                 state_dict[first_conv][:c1, :c2] = csd[first_conv][:c1, :c2]
                 len_updated_csd += 1
+                loaded_keys.add(first_conv)
+
+        expected_keys = {
+            key for key in state_dict if all(fragment not in key for fragment in exclude)
+        }
+        mismatched = sorted(
+            key for key, value in csd.items()
+            if key in state_dict and key in expected_keys and value.shape != state_dict[key].shape
+        )
+        missing = sorted(expected_keys - loaded_keys)
+        unexpected = sorted(set(csd) - set(state_dict))
+        self.pretrained_load_report = {
+            "loaded": len_updated_csd,
+            "expected": len(expected_keys),
+            "excluded": len(state_dict) - len(expected_keys),
+            "missing": missing,
+            "mismatched": mismatched,
+            "unexpected": unexpected,
+        }
         if verbose:
-            LOGGER.info(f"Transferred {len_updated_csd}/{len(self.model.state_dict())} items from pretrained weights")
+            status = "full" if len_updated_csd == len(expected_keys) and not mismatched else "partial"
+            LOGGER.info(
+                "Pretrained weight loading (%s): loaded %d/%d tensors; excluded=%d, "
+                "missing=%d, mismatched=%d, unexpected=%d.",
+                status,
+                len_updated_csd,
+                len(expected_keys),
+                self.pretrained_load_report["excluded"],
+                len(missing),
+                len(mismatched),
+                len(unexpected),
+            )
+            if missing or mismatched or unexpected:
+                LOGGER.info(
+                    "Pretrained skipped keys (first 20): missing=%s mismatched=%s unexpected=%s",
+                    missing[:20],
+                    mismatched[:20],
+                    unexpected[:20],
+                )
 
     def loss(self, batch, preds=None):
         """Compute loss.

@@ -31,6 +31,7 @@ from segment.utils.training_logs import (
 from segment.main import (
     _compact_existing_best_checkpoint,
     _export_best_segment_onnx,
+    _load_model_state_dict,
     _save_checkpoint,
     _should_export_pending_best,
 )
@@ -43,6 +44,22 @@ RESULT_COLUMNS = [
 
 
 class SegmentReportingTests(unittest.TestCase):
+    def test_flexible_pretrained_loader_normalizes_prefixes_and_skips_shape_mismatch(self):
+        model = torch.nn.Linear(3, 2)
+        original_weight = model.weight.detach().clone()
+        checkpoint = {
+            "module._orig_mod.weight": torch.ones(4, 3),
+            "module._orig_mod.bias": torch.full((2,), 7.0),
+            "module._orig_mod.unused": torch.ones(1),
+        }
+        logger = MagicMock()
+
+        _load_model_state_dict(model, checkpoint, logger=logger, strict=False)
+
+        self.assertTrue(torch.equal(model.weight, original_weight))
+        self.assertTrue(torch.equal(model.bias, torch.full((2,), 7.0)))
+        self.assertIn("loaded 1/2 tensors", logger.info.call_args_list[0].args[0])
+
     def test_best_checkpoint_omits_optimizer_but_last_remains_resumable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

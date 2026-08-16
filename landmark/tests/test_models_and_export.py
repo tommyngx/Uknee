@@ -8,6 +8,7 @@ import torch
 
 from landmark import KneePose
 from landmark.nn.autobackend import AutoBackend
+from landmark.nn.tasks import BaseModel
 from landmark.utils.exporting import KneePoseExportWrapper
 from landmark.core.config import get_cfg
 
@@ -16,6 +17,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ModelAndExportTests(unittest.TestCase):
+    def test_pretrained_loader_normalizes_wrapper_prefixes_and_loads_every_tensor(self):
+        source = BaseModel()
+        source.model = torch.nn.Sequential(torch.nn.Linear(3, 2))
+        target = BaseModel()
+        target.model = torch.nn.Sequential(torch.nn.Linear(3, 2))
+        with torch.no_grad():
+            source.model[0].weight.fill_(2.0)
+            source.model[0].bias.fill_(3.0)
+        wrapped = {f"module._orig_mod.{key}": value.clone() for key, value in source.state_dict().items()}
+
+        target.load({"state_dict": wrapped}, verbose=False)
+
+        self.assertTrue(torch.equal(target.model[0].weight, source.model[0].weight))
+        self.assertTrue(torch.equal(target.model[0].bias, source.model[0].bias))
+        self.assertEqual(target.pretrained_load_report["loaded"], 2)
+        self.assertEqual(target.pretrained_load_report["missing"], [])
+
     @staticmethod
     def _pose_batch():
         keypoints = torch.zeros(4, 51, 3)

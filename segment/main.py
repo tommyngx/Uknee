@@ -187,14 +187,39 @@ def _load_model_state_dict(model, state_dict, logger=None, *, strict=False):
     target = _unwrap_model(model)
     model_state = target.state_dict()
 
-    if any(key.startswith("module.") for key in state_dict):
-        state_dict = {
-            key.removeprefix("module."): value
-            for key, value in state_dict.items()
-        }
+    if isinstance(state_dict, nn.Module):
+        state_dict = state_dict.state_dict()
+    if not isinstance(state_dict, dict) or not all(
+        isinstance(value, torch.Tensor) for value in state_dict.values()
+    ):
+        raise TypeError("Checkpoint must contain a tensor state_dict or torch.nn.Module.")
+
+    variants = [dict(state_dict)]
+    current = dict(state_dict)
+    for _ in range(3):
+        prefix = next(
+            (item for item in ("module.", "_orig_mod.") if current and all(k.startswith(item) for k in current)),
+            None,
+        )
+        if prefix is None:
+            break
+        current = {key.removeprefix(prefix): value for key, value in current.items()}
+        variants.append(current)
+    state_dict = max(
+        variants,
+        key=lambda state: sum(
+            key in model_state and value.shape == model_state[key].shape
+            for key, value in state.items()
+        ),
+    )
 
     try:
         target.load_state_dict(state_dict, strict=True)
+        message = f"Checkpoint weight loading (full): loaded {len(model_state)}/{len(model_state)} tensors."
+        if logger is not None:
+            logger.info(message)
+        else:
+            print(message)
         return
     except RuntimeError as exc:
         if strict:
@@ -216,18 +241,29 @@ def _load_model_state_dict(model, state_dict, logger=None, *, strict=False):
 
     target.load_state_dict(matched_state_dict, strict=False)
 
+    missing_keys = sorted(set(model_state) - set(matched_state_dict))
+    unexpected_keys = sorted(set(state_dict) - set(model_state))
+
     msg = (
-        f"Flexible checkpoint loading complete: loaded {len(matched_state_dict)}/{len(model_state)} parameters. "
-        f"Skipped {len(mismatched_keys)} mismatched layers."
+        f"Flexible checkpoint loading complete: loaded {len(matched_state_dict)}/{len(model_state)} tensors; "
+        f"missing={len(missing_keys)}, mismatched={len(mismatched_keys)}, "
+        f"unexpected={len(unexpected_keys)}."
     )
     if logger is not None:
         logger.info(msg)
-        if mismatched_keys:
-            logger.info(f"Mismatched layers skipped: {mismatched_keys}")
+        if missing_keys or mismatched_keys or unexpected_keys:
+            logger.info(
+                "Skipped checkpoint keys (first 20): missing=%s mismatched=%s unexpected=%s",
+                missing_keys[:20], mismatched_keys[:20], unexpected_keys[:20],
+            )
     else:
         print(msg)
-        if mismatched_keys:
-            print(f"Mismatched layers skipped: {mismatched_keys}")
+        if missing_keys or mismatched_keys or unexpected_keys:
+            print(
+                "Skipped checkpoint keys (first 20): "
+                f"missing={missing_keys[:20]} mismatched={mismatched_keys[:20]} "
+                f"unexpected={unexpected_keys[:20]}"
+            )
 
 
 def _validate_runtime_config(args):
