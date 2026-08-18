@@ -20,7 +20,15 @@ from landmark.core.targets import extract_canonical_image_keypoints, gaussian_he
 from landmark.core.torch_utils import model_info
 
 from landmark.data.schema import NUM_LANDMARKS, REGION_KEYPOINT_COUNTS, REGION_NAMES
-from landmark.models import HRNetW32, HRNetW48, RTMOKneePose, ViTPoseB, ViTPoseS
+from landmark.models import (
+    HRNetW32,
+    HRNetW48,
+    RTMOKneePose,
+    ViTPoseB,
+    ViTPosePlusPlusB,
+    ViTPosePlusPlusS,
+    ViTPoseS,
+)
 from landmark.utils.validation import FlatPoseTrainerMixin, KneePoseValidator
 
 
@@ -104,6 +112,22 @@ class HeatmapPoseModel(nn.Module):
                 mlp_ratio=int(self.yaml.get("mlp_ratio", 4)),
                 dropout=float(self.yaml.get("dropout", 0.0)),
             )
+        elif self.architecture in {"vitpose_s_plusplus", "vitpose_b_plusplus"}:
+            is_small = self.architecture == "vitpose_s_plusplus"
+            vitpose_class = ViTPosePlusPlusS if is_small else ViTPosePlusPlusB
+            self.network = vitpose_class(
+                **common,
+                image_size=int(self.yaml.get("image_size", 640)),
+                patch_size=int(self.yaml.get("patch_size", 16)),
+                embed_dim=int(self.yaml.get("embed_dim", 384 if is_small else 768)),
+                depth=int(self.yaml.get("depth", 12)),
+                attention_heads=int(self.yaml.get("attention_heads", 12)),
+                mlp_ratio=int(self.yaml.get("mlp_ratio", 4)),
+                dropout=float(self.yaml.get("dropout", 0.0)),
+                drop_path_rate=float(self.yaml.get("drop_path_rate", 0.1 if is_small else 0.3)),
+                num_experts=int(self.yaml.get("num_experts", 6)),
+                part_features=int(self.yaml.get("part_features", 192)),
+            )
         elif self.architecture == "rtmo":
             self.network = RTMOKneePose(
                 **common,
@@ -184,8 +208,8 @@ class HeatmapPoseModel(nn.Module):
         proxy_loss = F.smooth_l1_loss(
             predictions["proxy_coordinates"][visible], target[visible], beta=0.01
         ) if visible.any() else canonical.sum() * 0.0
-        visibility_loss = F.binary_cross_entropy(
-            canonical[..., 2].clamp(1e-5, 1.0 - 1e-5), visible.to(canonical.dtype)
+        visibility_loss = F.binary_cross_entropy_with_logits(
+            predictions["visibility_logits"], visible.to(canonical.dtype)
         )
 
         target_boxes, region_present = [], []
@@ -206,8 +230,8 @@ class HeatmapPoseModel(nn.Module):
         bbox_loss = F.smooth_l1_loss(
             predictions["boxes"][region_present], target_boxes[region_present], beta=0.02
         ) if region_present.any() else canonical.sum() * 0.0
-        classification_loss = F.binary_cross_entropy(
-            predictions["region_scores"].clamp(1e-5, 1.0 - 1e-5), region_present.to(canonical.dtype)
+        classification_loss = F.binary_cross_entropy_with_logits(
+            predictions["region_logits"], region_present.to(canonical.dtype)
         )
 
         mle_terms = []

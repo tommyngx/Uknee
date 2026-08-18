@@ -3,6 +3,7 @@
 from .hrnet import HRNetLandmarkBaseline, HRNetW32, HRNetW48
 from .rtmo import RTMOKneePose
 from .vitpose import ViTPoseB, ViTPoseLandmarkBaseline, ViTPoseS
+from .vitpose_plusplus import ViTPosePlusPlusB, ViTPosePlusPlusS
 
 
 def __getattr__(name: str):
@@ -18,6 +19,8 @@ __all__ = [
     "HRNetW48",
     "ViTPoseS",
     "ViTPoseB",
+    "ViTPosePlusPlusS",
+    "ViTPosePlusPlusB",
     "RTMOKneePose",
     "HRNetLandmarkBaseline",
     "ViTPoseLandmarkBaseline",

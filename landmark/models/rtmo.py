@@ -332,7 +332,7 @@ class RTMOKneePose(nn.Module):
         proxy = (center[:, :, None] + selected_offsets.tanh() * scale[:, :, None] * 0.5).clamp(0.0, 1.0)
         region_scores = (region_weights * class_logits.transpose(1, 2).sigmoid()).sum(dim=-1)
 
-        coordinates, proxy_chunks, visibility_chunks = [], [], []
+        coordinates, proxy_chunks, visibility_chunks, visibility_logit_chunks = [], [], [], []
         offset = 0
         visibility = selected_visibility.sigmoid()
         for class_id, count in enumerate(REGION_KEYPOINT_COUNTS):
@@ -340,6 +340,7 @@ class RTMOKneePose(nn.Module):
             coordinates.append(dcc["coordinates"][:, class_id, index])
             proxy_chunks.append(proxy[:, class_id, index])
             visibility_chunks.append(visibility[:, class_id, index])
+            visibility_logit_chunks.append(selected_visibility[:, class_id, index])
             offset += count
         canonical = torch.cat(
             (torch.cat(coordinates, dim=1), torch.cat(visibility_chunks, dim=1).unsqueeze(-1)), dim=-1
@@ -351,6 +352,8 @@ class RTMOKneePose(nn.Module):
             "proxy_coordinates": torch.cat(proxy_chunks, dim=1),
             "boxes": boxes,
             "region_scores": region_scores,
+            "region_logits": torch.einsum("brn,bnr->br", region_weights, class_logits),
+            "visibility_logits": torch.cat(visibility_logit_chunks, dim=1),
             "dcc": dcc,
         }
 
