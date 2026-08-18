@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from uknee_plotting import apply_robust_y_limit
+from uknee_plotting import apply_robust_y_limit, format_duration
 
 
 def to_python_number(value):
@@ -243,12 +243,13 @@ def plot_training_dashboard(
 
     time_info = ""
     if elapsed_seconds and elapsed_seconds > 0:
-        mins = int(elapsed_seconds // 60)
-        secs = int(elapsed_seconds % 60)
-        avg_ep = elapsed_seconds / max(1, len(epochs))
-        time_info = f" | Train Time: {mins}m {secs}s ({avg_ep:.1f}s/ep)"
+        elapsed = float(elapsed_seconds)
+        duration = format_duration(elapsed)
+        avg_ep = elapsed / max(1, len(epochs))
+        time_info = f" | Train Time: {duration} | Time/Epoch: {avg_ep:.1f}s"
 
-    main_title = f"{title or f'Segmentation: {model_name}'}{time_info}"
+    base_title = title or f"Segmentation Dashboard: {model_name}"
+    main_title = f"{base_title}{time_info}"
     fig.suptitle(main_title, color="#1e293b", fontsize=14, fontweight="bold", ha="center", y=0.98)
 
     # Subplot 1: Training & Validation Loss

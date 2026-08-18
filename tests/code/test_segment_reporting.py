@@ -16,6 +16,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from uknee_plotting import format_duration
 from segment.utils.segment_reporting import (
     SegmentationEvaluator,
     _resize_sample_for_display,
@@ -208,6 +209,36 @@ class SegmentReportingTests(unittest.TestCase):
             self.assertEqual(summary["task"], "segmentation")
             self.assertEqual(summary["model"]["parameters"], 8)
             self.assertEqual(summary["model"]["input_shape"], [1, 3, 16, 16])
+
+    def test_format_duration_formats_hours_minutes_seconds(self):
+        self.assertEqual(format_duration(None), "0m 0s")
+        self.assertEqual(format_duration(-5), "0m 0s")
+        self.assertEqual(format_duration(45), "0m 45s")
+        self.assertEqual(format_duration(125), "2m 5s")
+        self.assertEqual(format_duration(3665), "1h 1m 5s")
+        self.assertEqual(format_duration(7325), "2h 2m 5s")
+
+    def test_dashboard_title_with_duration_and_epochs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            rows = [
+                {"epoch": 1, "train/loss": 0.5, "val/loss": 0.4, "val/dice": 0.8, "val/iou": 0.7, "val/hd95": 1.5, "val/assd": 0.5, "val/sens": 0.8, "val/prec": 0.8},
+                {"epoch": 2, "train/loss": 0.3, "val/loss": 0.2, "val/dice": 0.9, "val/iou": 0.8, "val/hd95": 1.0, "val/assd": 0.3, "val/sens": 0.9, "val/prec": 0.9},
+            ]
+            with patch("matplotlib.figure.Figure.suptitle") as mock_suptitle:
+                plot_training_dashboard(
+                    tmp_path, rows,
+                    loss_keys=[("train/loss", "Training Loss"), ("val/loss", "Validation Loss")],
+                    metric_keys=[("val/dice", "Val Dice"), ("val/iou", "Val IoU")],
+                    ranking_key="val/dice",
+                    model_name="RWKV_UNetV5",
+                    elapsed_seconds=3665,
+                )
+                self.assertTrue(mock_suptitle.called)
+                title_arg = mock_suptitle.call_args[0][0]
+                self.assertIn("Segmentation Dashboard: RWKV_UNetV5", title_arg)
+                self.assertIn("Train Time: 1h 1m 5s", title_arg)
+                self.assertIn("Time/Epoch: 1832.5s", title_arg)
 
 
 if __name__ == "__main__":

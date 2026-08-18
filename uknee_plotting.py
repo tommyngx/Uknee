@@ -114,4 +114,15 @@ def apply_robust_y_limit(
     }
 
 
-__all__ = ["apply_robust_y_limit"]
+
+def format_duration(elapsed_seconds: float | None) -> str:
+    """Format duration in seconds into 'Xh Ym Zs' or 'Ym Zs'."""
+    if elapsed_seconds is None or elapsed_seconds < 0:
+        return "0m 0s"
+    elapsed = float(elapsed_seconds)
+    hours, remainder = divmod(int(round(elapsed)), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
+
+
+__all__ = ["apply_robust_y_limit", "format_duration"]

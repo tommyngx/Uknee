@@ -865,8 +865,8 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
             top_k=3,
             filename="segment_dashboard.png",
             model_name=args.model,
-            title=f"{args.model} | {args.dataset_name}",
-            elapsed_seconds=time.time() - training_started,
+            title=f"Segmentation Dashboard: {args.model} | {args.dataset_name}" if args.dataset_name else f"Segmentation Dashboard: {args.model}",
+            elapsed_seconds=previous_duration + time.time() - training_started,
         )
         logger.info(
             "Epoch %d/%d | train_loss=%.6f val_loss=%.6f dice=%.4f iou=%.4f "
