@@ -16,5 +16,7 @@ proxy_loss_gain: 1.0
 visibility_loss_gain: 1.0
 bbox_loss_gain: 2.0
 mle_loss_gain: 1.0
+classification_loss_gain: 1.0
+spatial_sigma_scale: 0.25
 nc: 4
 kpt_shape: [51, 3]

@@ -52,6 +52,33 @@ def _soft_argmax(heatmaps: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.stack((x, y), dim=-1), confidence
 
 
+def _rtmo_spatial_classification_loss(
+    candidate_logits: torch.Tensor,
+    candidate_grids: torch.Tensor,
+    target_boxes: torch.Tensor,
+    region_present: torch.Tensor,
+    sigma_scale: float = 0.25,
+) -> torch.Tensor:
+    """Supervise each fixed RTMO region's candidate distribution in space."""
+    logits = candidate_logits.transpose(1, 2).float()
+    centers = target_boxes[..., :2].float()
+    sigma = (target_boxes[..., 2:].float() * sigma_scale).clamp(0.02, 0.25)
+    delta = (candidate_grids.float().view(1, 1, -1, 2) - centers.unsqueeze(2)) / sigma.unsqueeze(2)
+    target_distribution = (-0.5 * delta.square().sum(dim=-1)).softmax(dim=-1)
+    log_distribution = logits.log_softmax(dim=-1)
+    spatial_kl = F.kl_div(log_distribution, target_distribution, reduction="none").sum(dim=-1)
+
+    present = region_present.to(spatial_kl.dtype)
+    present_loss = (spatial_kl * present).sum() / present.sum().clamp_min(1.0)
+    absent = ~region_present
+    absent_loss = (
+        F.binary_cross_entropy_with_logits(logits[absent], torch.zeros_like(logits[absent]))
+        if absent.any()
+        else present_loss.new_zeros(())
+    )
+    return present_loss + absent_loss
+
+
 def canonical_to_objects(canonical: torch.Tensor, image_hw: tuple[int, int]) -> list[dict[str, torch.Tensor]]:
     """Convert normalized canonical predictions to four fixed pose objects."""
     height, width = image_hw
@@ -230,8 +257,12 @@ class HeatmapPoseModel(nn.Module):
         bbox_loss = F.smooth_l1_loss(
             predictions["boxes"][region_present], target_boxes[region_present], beta=0.02
         ) if region_present.any() else canonical.sum() * 0.0
-        classification_loss = F.binary_cross_entropy_with_logits(
-            predictions["region_logits"], region_present.to(canonical.dtype)
+        classification_loss = _rtmo_spatial_classification_loss(
+            predictions["candidate_logits"],
+            predictions["candidate_grids"],
+            target_boxes,
+            region_present,
+            sigma_scale=float(self.yaml.get("spatial_sigma_scale", 0.25)),
         )
 
         mle_terms = []
@@ -250,7 +281,7 @@ class HeatmapPoseModel(nn.Module):
                 mle_terms.append(-probability[region_visible].log().mean())
             offset += count
         mle_loss = torch.stack(mle_terms).mean() if mle_terms else canonical.sum() * 0.0
-        dcc_loss = mle_loss + classification_loss
+        dcc_loss = mle_loss + float(self.yaml.get("classification_loss_gain", 1.0)) * classification_loss
 
         total = (
             float(self.yaml.get("coordinate_loss_gain", 5.0)) * coordinate_loss

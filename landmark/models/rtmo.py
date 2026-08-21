@@ -353,6 +353,12 @@ class RTMOKneePose(nn.Module):
             "boxes": boxes,
             "region_scores": region_scores,
             "region_logits": torch.einsum("brn,bnr->br", region_weights, class_logits),
+            # Candidate-level outputs are training-only.  The fixed-region
+            # adaptation needs a spatial target for each class; supervising
+            # only the pooled logits cannot teach the selector where a region
+            # is located.
+            "candidate_logits": class_logits,
+            "candidate_grids": grids,
             "visibility_logits": torch.cat(visibility_logit_chunks, dim=1),
             "dcc": dcc,
         }

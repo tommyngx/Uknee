@@ -7,6 +7,7 @@ from unittest.mock import patch
 import torch
 
 from landmark import KneePose
+from landmark.models.heatmap_adapter import _rtmo_spatial_classification_loss
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,9 +47,30 @@ class RTMOAutomaticMixedPrecisionTests(unittest.TestCase):
             predictions = model(torch.zeros(2, 3, 64, 96), return_aux=True)
         self.assertEqual(tuple(predictions["visibility_logits"].shape), (2, 129))
         self.assertEqual(tuple(predictions["region_logits"].shape), (2, 4))
+        self.assertEqual(predictions["candidate_logits"].shape[0], 2)
+        self.assertEqual(predictions["candidate_logits"].shape[2], 4)
+        self.assertEqual(
+            predictions["candidate_logits"].shape[1], predictions["candidate_grids"].shape[0]
+        )
         self.assertTrue(
             torch.allclose(predictions["visibility_logits"].sigmoid(), predictions["canonical"][..., 2])
         )
+
+    def test_rtmo_spatial_loss_rewards_the_candidate_nearest_the_region(self):
+        grids = torch.tensor([[0.2, 0.2], [0.8, 0.8]])
+        boxes = torch.tensor([[[0.2, 0.2, 0.2, 0.2]]])
+        present = torch.ones(1, 1, dtype=torch.bool)
+        correct = torch.tensor([[[6.0], [-6.0]]])
+        reversed_logits = correct.flip(1)
+        uniform = torch.zeros(1, 2, 1, requires_grad=True)
+
+        correct_loss = _rtmo_spatial_classification_loss(correct, grids, boxes, present)
+        reversed_loss = _rtmo_spatial_classification_loss(reversed_logits, grids, boxes, present)
+        _rtmo_spatial_classification_loss(uniform, grids, boxes, present).backward()
+
+        self.assertLess(correct_loss, reversed_loss)
+        self.assertLess(uniform.grad[0, 0, 0], 0)
+        self.assertGreater(uniform.grad[0, 1, 0], 0)
 
 
 if __name__ == "__main__":
