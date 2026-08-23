@@ -44,6 +44,18 @@ class RTMOAutomaticMixedPrecisionTests(unittest.TestCase):
             all(parameter.grad is None or torch.isfinite(parameter.grad).all() for parameter in model.parameters())
         )
 
+    def test_rtmo_debug_reports_selector_box_pose_and_gradients(self):
+        model = KneePose(ROOT / "cfg" / "models" / "rtmo-pose.yaml").model.train()
+        with patch.dict("os.environ", {"UKNEE_RTMO_DEBUG": "1", "UKNEE_RTMO_DEBUG_INTERVAL": "1"}):
+            with patch("landmark.models.heatmap_adapter.LOGGER.warning") as warning:
+                loss, _ = model(self._pose_batch())
+                loss.backward()
+        output = "\n".join(str(call.args[0]) for call in warning.call_args_list)
+        self.assertIn("selector[", output)
+        self.assertIn("coverage=", output)
+        self.assertIn("pose[dcc_mae=", output)
+        self.assertIn("RTMO_DEBUG_GRAD", output)
+
     def test_rtmo_auxiliary_logits_match_canonical_layout(self):
         model = KneePose(ROOT / "cfg" / "models" / "rtmo-pose.yaml").model.network.eval()
         with torch.no_grad():

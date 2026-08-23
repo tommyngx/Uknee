@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import copy
+import os
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,105 @@ class HeatmapPoseModel(nn.Module):
         if verbose:
             self.info()
 
+    def _debug_rtmo(
+        self,
+        predictions,
+        target,
+        visible,
+        target_boxes,
+        region_present,
+        losses,
+    ):
+        """Emit compact RTMO selector/box/DCC telemetry when explicitly enabled."""
+        critical = {
+            **losses,
+            "canonical": predictions["canonical"],
+            "proxy": predictions["proxy_coordinates"],
+            "boxes": predictions["boxes"],
+            "x_logp": predictions["dcc"]["x_log_probability"],
+            "y_logp": predictions["dcc"]["y_log_probability"],
+        }
+        non_finite = [name for name, value in critical.items() if not torch.isfinite(value).all()]
+        if non_finite:
+            raise FloatingPointError(f"RTMO produced non-finite values in: {', '.join(non_finite)}")
+
+        enabled = os.environ.get("UKNEE_RTMO_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+        if not enabled:
+            return
+        self._rtmo_debug_step = getattr(self, "_rtmo_debug_step", 0) + 1
+        try:
+            interval = max(1, int(os.environ.get("UKNEE_RTMO_DEBUG_INTERVAL", "16")))
+        except ValueError:
+            interval = 16
+        if self._rtmo_debug_step > 3 and self._rtmo_debug_step % interval:
+            return
+
+        with torch.no_grad():
+            logits = predictions["candidate_logits"].transpose(1, 2).float()
+            weights = logits.softmax(dim=-1)
+            grids = predictions["candidate_grids"].float()
+            selected_center = torch.einsum("brn,nd->brd", weights, grids)
+            peak_center = grids[weights.argmax(dim=-1)]
+            entropy = -(weights * weights.clamp_min(1e-12).log()).sum(dim=-1)
+            entropy = entropy / weights.new_tensor(weights.shape[-1]).log()
+            present_xy = region_present[..., None].expand_as(target_boxes[..., :2])
+            box_xy = predictions["boxes"].float()
+
+            covered = 0
+            visible_count = 0
+            offset = 0
+            dcc = predictions["dcc"]
+            for class_id, count in enumerate(REGION_KEYPOINT_COUNTS):
+                region_target = target[:, offset : offset + count]
+                region_visible = visible[:, offset : offset + count]
+                in_x = (region_target[..., 0] >= dcc["x_bins"][:, class_id, :1]) & (
+                    region_target[..., 0] <= dcc["x_bins"][:, class_id, -1:]
+                )
+                in_y = (region_target[..., 1] >= dcc["y_bins"][:, class_id, :1]) & (
+                    region_target[..., 1] <= dcc["y_bins"][:, class_id, -1:]
+                )
+                covered += int(((in_x & in_y) & region_visible).sum())
+                visible_count += int(region_visible.sum())
+                offset += count
+
+            loss_text = ",".join(f"{name}={float(value.detach()):.4g}" for name, value in losses.items())
+            LOGGER.warning(
+                "RTMO_DEBUG step=%d %s selector[peak=%.4f entropy=%.4f soft_mae=%.4f hard_mae=%.4f] "
+                "box[center_mae=%.4f scale_mae=%.4f coverage=%.1f%%] pose[dcc_mae=%.4f proxy_mae=%.4f]",
+                self._rtmo_debug_step,
+                loss_text,
+                float(weights.amax(dim=-1).mean()),
+                float(entropy.mean()),
+                float((selected_center - target_boxes[..., :2])[present_xy].abs().mean()),
+                float((peak_center - target_boxes[..., :2])[present_xy].abs().mean()),
+                float((box_xy[..., :2] - target_boxes[..., :2])[present_xy].abs().mean()),
+                float((box_xy[..., 2:] - target_boxes[..., 2:])[present_xy].abs().mean()),
+                100.0 * covered / max(visible_count, 1),
+                float((predictions["canonical"][..., :2][visible] - target[visible]).abs().mean()),
+                float((predictions["proxy_coordinates"][visible] - target[visible]).abs().mean()),
+            )
+
+        def log_gradient(name):
+            def hook(gradient):
+                finite = torch.isfinite(gradient)
+                LOGGER.warning(
+                    "RTMO_DEBUG_GRAD step=%d tensor=%s finite=%.1f%% norm=%.4g max=%.4g",
+                    self._rtmo_debug_step,
+                    name,
+                    100.0 * float(finite.float().mean()),
+                    float(gradient.float().norm()),
+                    float(gradient.float().abs().max()),
+                )
+            return hook
+
+        for name, tensor in (
+            ("candidate_logits", predictions["candidate_logits"]),
+            ("x_log_probability", predictions["dcc"]["x_log_probability"]),
+            ("canonical", predictions["canonical"]),
+        ):
+            if tensor.requires_grad:
+                tensor.register_hook(log_gradient(name))
+
     def forward(self, inputs: torch.Tensor | dict[str, torch.Tensor], *args, **kwargs):
         if isinstance(inputs, dict):
             return self.loss(inputs)
@@ -292,6 +392,21 @@ class HeatmapPoseModel(nn.Module):
             + float(self.yaml.get("visibility_loss_gain", 1.0)) * visibility_loss
             + float(self.yaml.get("bbox_loss_gain", 2.0)) * bbox_loss
             + float(self.yaml.get("mle_loss_gain", 1.0)) * dcc_loss
+        )
+        self._debug_rtmo(
+            predictions,
+            target,
+            visible,
+            target_boxes,
+            region_present,
+            {
+                "coord": coordinate_loss,
+                "proxy": proxy_loss,
+                "bbox": bbox_loss,
+                "vis": visibility_loss,
+                "dcc": dcc_loss,
+                "total": total,
+            },
         )
         items = torch.stack(
             tuple(value.detach() for value in (coordinate_loss, proxy_loss, bbox_loss, visibility_loss, dcc_loss))
