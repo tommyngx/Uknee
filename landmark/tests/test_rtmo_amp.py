@@ -40,11 +40,15 @@ class RTMOAutomaticMixedPrecisionTests(unittest.TestCase):
         loss.backward()
         self.assertTrue(torch.isfinite(loss))
         self.assertTrue(torch.isfinite(items).all())
+        self.assertTrue(
+            all(parameter.grad is None or torch.isfinite(parameter.grad).all() for parameter in model.parameters())
+        )
 
     def test_rtmo_auxiliary_logits_match_canonical_layout(self):
         model = KneePose(ROOT / "cfg" / "models" / "rtmo-pose.yaml").model.network.eval()
         with torch.no_grad():
-            predictions = model(torch.zeros(2, 3, 64, 96), return_aux=True)
+            with torch.autocast("cpu", dtype=torch.bfloat16):
+                predictions = model(torch.zeros(2, 3, 64, 96), return_aux=True)
         self.assertEqual(tuple(predictions["visibility_logits"].shape), (2, 129))
         self.assertEqual(tuple(predictions["region_logits"].shape), (2, 4))
         self.assertEqual(predictions["candidate_logits"].shape[0], 2)
@@ -52,9 +56,24 @@ class RTMOAutomaticMixedPrecisionTests(unittest.TestCase):
         self.assertEqual(
             predictions["candidate_logits"].shape[1], predictions["candidate_grids"].shape[0]
         )
+        self.assertEqual(predictions["dcc"]["x_log_probability"].dtype, torch.float32)
+        self.assertEqual(predictions["dcc"]["y_log_probability"].dtype, torch.float32)
+        self.assertTrue(torch.isfinite(predictions["dcc"]["x_log_probability"]).all())
+        self.assertTrue(torch.isfinite(predictions["dcc"]["y_log_probability"]).all())
         self.assertTrue(
-            torch.allclose(predictions["visibility_logits"].sigmoid(), predictions["canonical"][..., 2])
+            torch.allclose(
+                predictions["visibility_logits"].sigmoid().float(), predictions["canonical"][..., 2].float()
+            )
         )
+
+    def test_float16_probability_product_reproduces_the_old_mle_underflow(self):
+        probability = torch.tensor([1e-5], dtype=torch.float16)
+        old_joint_probability = (probability * probability).clamp_min(1e-9)
+        stable_log_probability = probability.float().log() * 2
+
+        self.assertEqual(old_joint_probability.item(), 0.0)
+        self.assertFalse(torch.isfinite(old_joint_probability.log()).item())
+        self.assertTrue(torch.isfinite(stable_log_probability).item())
 
     def test_rtmo_spatial_loss_rewards_the_candidate_nearest_the_region(self):
         grids = torch.tensor([[0.2, 0.2], [0.8, 0.8]])

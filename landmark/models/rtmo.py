@@ -135,6 +135,11 @@ class GAUEncoder(nn.Module):
         query = base * self.gamma[0] + self.beta[0] + position
         key = base * self.gamma[1] + self.beta[1] + position
         kernel = F.relu(torch.matmul(query, key.transpose(-1, -2)) / math.sqrt(self.attention_channels)).square()
+        # RTMO normally mixes a small human skeleton.  With Uknee's 129
+        # landmarks an unnormalised sum grows with the token count and can
+        # eventually overflow under CUDA AMP.  Row normalisation keeps the GAU
+        # scale independent of the number of landmarks.
+        kernel = kernel / kernel.sum(dim=-1, keepdim=True).clamp_min(1e-6)
         mixed = u * torch.matmul(kernel, value)
         return inputs * self.residual_scale + self.output(mixed)
 
@@ -181,27 +186,40 @@ class DynamicCoordinateClassifier(nn.Module):
         self.register_buffer("y_base", torch.linspace(-0.5, 0.5, num_bins[1]), persistent=False)
 
     def forward(self, pose_features: torch.Tensor, boxes: torch.Tensor) -> dict[str, torch.Tensor]:
-        batch, regions, _ = pose_features.shape
-        keypoint_features = self.pose_to_keypoints(pose_features).reshape(
-            batch, regions, self.num_landmarks, self.feature_channels
-        )
-        keypoint_features = self.gau(keypoint_features, self.keypoint_position)
-        center, scale = boxes.split(2, dim=-1)
-        x_bins = self.x_base.view(1, 1, -1) * scale[..., 0:1] + center[..., 0:1]
-        y_bins = self.y_base.view(1, 1, -1) * scale[..., 1:2] + center[..., 1:2]
-        # The reference RTMO operates in pixel coordinates. Our boxes are
-        # normalized, so scale them back to a bin-sized coordinate domain
-        # before sine encoding to preserve useful positional frequencies.
-        x_encoding = self.x_projection(self.sine(x_bins * self.x_coordinate_scale))
-        y_encoding = self.y_projection(self.sine(y_bins * self.y_coordinate_scale))
-        x_probability = torch.matmul(keypoint_features, x_encoding.transpose(-1, -2)).softmax(dim=-1)
-        y_probability = torch.matmul(keypoint_features, y_encoding.transpose(-1, -2)).softmax(dim=-1)
-        x = (x_probability * x_bins.unsqueeze(-2)).sum(dim=-1)
-        y = (y_probability * y_bins.unsqueeze(-2)).sum(dim=-1)
+        # Keep DCC in float32 even when the surrounding trainer uses CUDA AMP.
+        # Its wide softmaxes and GAU are particularly vulnerable to float16
+        # overflow/underflow after many optimizer steps.
+        with torch.autocast(device_type=pose_features.device.type, enabled=False):
+            pose_features = pose_features.float()
+            boxes = boxes.float()
+            batch, regions, _ = pose_features.shape
+            keypoint_features = self.pose_to_keypoints(pose_features).reshape(
+                batch, regions, self.num_landmarks, self.feature_channels
+            )
+            keypoint_features = self.gau(keypoint_features, self.keypoint_position)
+            center, scale = boxes.split(2, dim=-1)
+            x_bins = self.x_base.view(1, 1, -1) * scale[..., 0:1] + center[..., 0:1]
+            y_bins = self.y_base.view(1, 1, -1) * scale[..., 1:2] + center[..., 1:2]
+            # The reference RTMO operates in pixel coordinates. Our boxes are
+            # normalized, so scale them back to a bin-sized coordinate domain
+            # before sine encoding to preserve useful positional frequencies.
+            x_encoding = self.x_projection(self.sine(x_bins * self.x_coordinate_scale))
+            y_encoding = self.y_projection(self.sine(y_bins * self.y_coordinate_scale))
+            logit_scale = self.feature_channels**-0.5
+            x_logits = torch.matmul(keypoint_features, x_encoding.transpose(-1, -2)) * logit_scale
+            y_logits = torch.matmul(keypoint_features, y_encoding.transpose(-1, -2)) * logit_scale
+            x_log_probability = x_logits.log_softmax(dim=-1)
+            y_log_probability = y_logits.log_softmax(dim=-1)
+            x_probability = x_log_probability.exp()
+            y_probability = y_log_probability.exp()
+            x = (x_probability * x_bins.unsqueeze(-2)).sum(dim=-1)
+            y = (y_probability * y_bins.unsqueeze(-2)).sum(dim=-1)
         return {
             "coordinates": torch.stack((x, y), dim=-1).clamp(0.0, 1.0),
             "x_probability": x_probability,
             "y_probability": y_probability,
+            "x_log_probability": x_log_probability,
+            "y_log_probability": y_log_probability,
             "x_bins": x_bins,
             "y_bins": y_bins,
         }

@@ -274,11 +274,14 @@ class HeatmapPoseModel(nn.Module):
             region_visible = visible[:, index]
             x_index = (dcc["x_bins"][:, class_id, None] - region_target[..., 0, None]).abs().argmin(dim=-1)
             y_index = (dcc["y_bins"][:, class_id, None] - region_target[..., 1, None]).abs().argmin(dim=-1)
-            x_probability = dcc["x_probability"][:, class_id, index].gather(-1, x_index[..., None]).squeeze(-1)
-            y_probability = dcc["y_probability"][:, class_id, index].gather(-1, y_index[..., None]).squeeze(-1)
-            probability = (x_probability * y_probability).clamp_min(1e-9)
+            x_log_probability = dcc["x_log_probability"][:, class_id, index].gather(
+                -1, x_index[..., None]
+            ).squeeze(-1)
+            y_log_probability = dcc["y_log_probability"][:, class_id, index].gather(
+                -1, y_index[..., None]
+            ).squeeze(-1)
             if region_visible.any():
-                mle_terms.append(-probability[region_visible].log().mean())
+                mle_terms.append(-(x_log_probability + y_log_probability)[region_visible].mean())
             offset += count
         mle_loss = torch.stack(mle_terms).mean() if mle_terms else canonical.sum() * 0.0
         dcc_loss = mle_loss + float(self.yaml.get("classification_loss_gain", 1.0)) * classification_loss
