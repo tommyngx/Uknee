@@ -65,6 +65,7 @@ class RTMOAutomaticMixedPrecisionTests(unittest.TestCase):
         self.assertEqual(tuple(predictions["region_logits"].shape), (2, 4))
         self.assertEqual(predictions["candidate_logits"].shape[0], 2)
         self.assertEqual(predictions["candidate_logits"].shape[2], 4)
+        self.assertEqual(predictions["candidate_logits"].dtype, torch.float32)
         self.assertEqual(
             predictions["candidate_logits"].shape[1], predictions["candidate_grids"].shape[0]
         )
@@ -72,11 +73,29 @@ class RTMOAutomaticMixedPrecisionTests(unittest.TestCase):
         self.assertEqual(predictions["dcc"]["y_log_probability"].dtype, torch.float32)
         self.assertTrue(torch.isfinite(predictions["dcc"]["x_log_probability"]).all())
         self.assertTrue(torch.isfinite(predictions["dcc"]["y_log_probability"]).all())
+        self.assertTrue(torch.allclose(predictions["dcc"]["x_bins"][..., 0], torch.zeros(2, 4)))
+        self.assertTrue(torch.allclose(predictions["dcc"]["x_bins"][..., -1], torch.ones(2, 4)))
+        self.assertTrue(torch.allclose(predictions["dcc"]["y_bins"][..., 0], torch.zeros(2, 4)))
+        self.assertTrue(torch.allclose(predictions["dcc"]["y_bins"][..., -1], torch.ones(2, 4)))
         self.assertTrue(
             torch.allclose(
                 predictions["visibility_logits"].sigmoid().float(), predictions["canonical"][..., 2].float()
             )
         )
+
+    def test_pose_paths_do_not_backpropagate_into_candidate_classifier(self):
+        network = KneePose(ROOT / "cfg" / "models" / "rtmo-pose.yaml").model.network.train()
+        predictions = network(torch.rand(1, 3, 64, 64), return_aux=True)
+        pose_only_loss = (
+            predictions["canonical"].sum()
+            + predictions["proxy_coordinates"].sum()
+            + predictions["boxes"].sum()
+        )
+        pose_only_loss.backward()
+
+        classifier_gradients = [parameter.grad for parameter in network.head.out_class.parameters()]
+        self.assertTrue(all(gradient is None for gradient in classifier_gradients))
+        self.assertTrue(any(parameter.grad is not None for parameter in network.head.out_pose.parameters()))
 
     def test_float16_probability_product_reproduces_the_old_mle_underflow(self):
         probability = torch.tensor([1e-5], dtype=torch.float16)

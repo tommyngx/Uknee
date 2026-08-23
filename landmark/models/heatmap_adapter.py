@@ -166,6 +166,7 @@ class HeatmapPoseModel(nn.Module):
                 pose_vector_channels=int(self.yaml.get("pose_vector_channels", 256)),
                 dcc_feature_channels=int(self.yaml.get("dcc_feature_channels", 128)),
                 dcc_bins=tuple(self.yaml.get("dcc_bins", (192, 256))),
+                dcc_full_image_bins=bool(self.yaml.get("dcc_full_image_bins", False)),
             )
         else:
             raise ValueError(f"Unsupported canonical architecture: {self.architecture}")

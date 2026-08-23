@@ -158,7 +158,7 @@ class SinePositionEncoding(nn.Module):
 
 
 class DynamicCoordinateClassifier(nn.Module):
-    """RTMO DCC: dynamic x/y bins conditioned on each predicted region box."""
+    """RTMO DCC with either dynamic box-relative or robust full-image bins."""
 
     def __init__(
         self,
@@ -167,10 +167,12 @@ class DynamicCoordinateClassifier(nn.Module):
         feature_channels: int = 128,
         num_bins: tuple[int, int] = (192, 256),
         sine_channels: int = 128,
+        full_image_bins: bool = False,
     ):
         super().__init__()
         self.num_landmarks = num_landmarks
         self.feature_channels = feature_channels
+        self.full_image_bins = full_image_bins
         self.pose_to_keypoints = nn.Sequential(
             nn.Linear(input_channels, num_landmarks * feature_channels),
             nn.LayerNorm(num_landmarks * feature_channels),
@@ -197,9 +199,13 @@ class DynamicCoordinateClassifier(nn.Module):
                 batch, regions, self.num_landmarks, self.feature_channels
             )
             keypoint_features = self.gau(keypoint_features, self.keypoint_position)
-            center, scale = boxes.split(2, dim=-1)
-            x_bins = self.x_base.view(1, 1, -1) * scale[..., 0:1] + center[..., 0:1]
-            y_bins = self.y_base.view(1, 1, -1) * scale[..., 1:2] + center[..., 1:2]
+            if self.full_image_bins:
+                x_bins = (self.x_base + 0.5).view(1, 1, -1).expand(batch, regions, -1)
+                y_bins = (self.y_base + 0.5).view(1, 1, -1).expand(batch, regions, -1)
+            else:
+                center, scale = boxes.split(2, dim=-1)
+                x_bins = self.x_base.view(1, 1, -1) * scale[..., 0:1] + center[..., 0:1]
+                y_bins = self.y_base.view(1, 1, -1) * scale[..., 1:2] + center[..., 1:2]
             # The reference RTMO operates in pixel coordinates. Our boxes are
             # normalized, so scale them back to a bin-sized coordinate domain
             # before sine encoding to preserve useful positional frequencies.
@@ -294,6 +300,7 @@ class RTMOKneePose(nn.Module):
         pose_vector_channels: int = 256,
         dcc_feature_channels: int = 128,
         dcc_bins: tuple[int, int] = (192, 256),
+        dcc_full_image_bins: bool = False,
     ):
         super().__init__()
         if num_landmarks != NUM_LANDMARKS:
@@ -311,6 +318,7 @@ class RTMOKneePose(nn.Module):
             feature_channels=dcc_feature_channels,
             num_bins=dcc_bins,
             sine_channels=dcc_feature_channels,
+            full_image_bins=dcc_full_image_bins,
         )
 
     @staticmethod
@@ -336,19 +344,28 @@ class RTMOKneePose(nn.Module):
         pose_vectors = _flatten(pose_maps)
         grids = self._grids(features)
 
-        region_weights = class_logits.transpose(1, 2).softmax(dim=-1)
-        selected_pose = torch.einsum("brn,bnc->brc", region_weights, pose_vectors)
-        selected_raw_boxes = torch.einsum("brn,bnd->brd", region_weights, raw_boxes)
-        selected_offsets = torch.einsum("brn,bnkd->brkd", region_weights, raw_offsets)
-        selected_visibility = torch.einsum("brn,bnk->brk", region_weights, visibility_logits)
-        selected_grid = torch.einsum("brn,nd->brd", region_weights, grids)
+        # Candidate selection stays in float32 under CUDA AMP.  The detached
+        # aggregation weights isolate the classifier from noisy pose/box/DCC
+        # gradients; candidate logits are supervised directly by the spatial
+        # classification loss instead.
+        with torch.autocast(device_type=class_logits.device.type, enabled=False):
+            candidate_logits = class_logits.float()
+            region_weights = candidate_logits.transpose(1, 2).softmax(dim=-1)
+            aggregation_weights = region_weights.detach()
+            selected_pose = torch.einsum("brn,bnc->brc", aggregation_weights, pose_vectors.float())
+            selected_raw_boxes = torch.einsum("brn,bnd->brd", aggregation_weights, raw_boxes.float())
+            selected_offsets = torch.einsum("brn,bnkd->brkd", aggregation_weights, raw_offsets.float())
+            selected_visibility = torch.einsum(
+                "brn,bnk->brk", aggregation_weights, visibility_logits.float()
+            )
+            selected_grid = torch.einsum("brn,nd->brd", aggregation_weights, grids.float())
 
-        center = (selected_grid + selected_raw_boxes[..., :2].tanh() * 0.25).clamp(0.0, 1.0)
-        scale = (selected_raw_boxes[..., 2:].sigmoid() * 0.9 + 0.1).clamp(0.05, 1.0)
-        boxes = torch.cat((center, scale), dim=-1)
+            center = (selected_grid + selected_raw_boxes[..., :2].tanh() * 0.25).clamp(0.0, 1.0)
+            scale = (selected_raw_boxes[..., 2:].sigmoid() * 0.9 + 0.1).clamp(0.05, 1.0)
+            boxes = torch.cat((center, scale), dim=-1)
         dcc = self.dcc(selected_pose, boxes)
         proxy = (center[:, :, None] + selected_offsets.tanh() * scale[:, :, None] * 0.5).clamp(0.0, 1.0)
-        region_scores = (region_weights * class_logits.transpose(1, 2).sigmoid()).sum(dim=-1)
+        region_scores = (region_weights * candidate_logits.transpose(1, 2).sigmoid()).sum(dim=-1)
 
         coordinates, proxy_chunks, visibility_chunks, visibility_logit_chunks = [], [], [], []
         offset = 0
@@ -370,13 +387,13 @@ class RTMOKneePose(nn.Module):
             "proxy_coordinates": torch.cat(proxy_chunks, dim=1),
             "boxes": boxes,
             "region_scores": region_scores,
-            "region_logits": torch.einsum("brn,bnr->br", region_weights, class_logits),
+            "region_logits": torch.einsum("brn,bnr->br", region_weights, candidate_logits),
             # Candidate-level outputs are training-only.  The fixed-region
             # adaptation needs a spatial target for each class; supervising
             # only the pooled logits cannot teach the selector where a region
             # is located.
-            "candidate_logits": class_logits,
-            "candidate_grids": grids,
+            "candidate_logits": candidate_logits,
+            "candidate_grids": grids.float(),
             "visibility_logits": torch.cat(visibility_logit_chunks, dim=1),
             "dcc": dcc,
         }
