@@ -1,6 +1,6 @@
-#include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>
+#include <c10/cuda/CUDAStream.h>
 #include <torch/extension.h>
 
 #include <vector>
@@ -148,7 +148,7 @@ std::vector<torch::Tensor> wkv6a_cuda_forward(
       {batch, length, heads, head_dim, head_dim},
       r.options().dtype(torch::kFloat32));
   const dim3 blocks(batch * heads);
-  const auto stream = at::cuda::getCurrentCUDAStream();
+  const auto stream = c10::cuda::getCurrentCUDAStream();
 
   AT_DISPATCH_FLOATING_TYPES_AND2(
       torch::kFloat16, torch::kBFloat16, r.scalar_type(), "wkv6a_matrix_forward", [&] {
@@ -182,7 +182,7 @@ std::vector<torch::Tensor> wkv6a_cuda_backward(
       {batch, heads, head_dim, head_dim},
       r.options().dtype(torch::kFloat32));
   const dim3 blocks(batch * heads);
-  const auto stream = at::cuda::getCurrentCUDAStream();
+  const auto stream = c10::cuda::getCurrentCUDAStream();
 
   AT_DISPATCH_FLOATING_TYPES_AND2(
       torch::kFloat16, torch::kBFloat16, r.scalar_type(), "wkv6a_matrix_backward", [&] {
