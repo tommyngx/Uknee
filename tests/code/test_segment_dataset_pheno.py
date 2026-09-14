@@ -4,11 +4,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
 
 from segment.dataloader.augment import build_val_transform
+from segment.dataloader.dataloader import getDataloader
 from segment.dataloader.dataset_pheno import (
     PhenoSegDataset,
     infer_pheno_num_classes,
@@ -65,6 +67,25 @@ class PhenoSegDatasetTests(unittest.TestCase):
             self.assertEqual(sample["image"].shape, (3, 24, 16))
             self.assertEqual(sample["label"].shape, (24, 16))
             self.assertEqual(set(np.unique(sample["label"])), {0, 10})
+
+    def test_validation_loader_uses_training_batch_and_workers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_dataset(root)
+            args = SimpleNamespace(
+                base_dir=str(root),
+                dataset_name="PhenoX01",
+                img_size=[24, 16],
+                aug_strategy="none",
+                num_classes=11,
+                batch_size=4,
+                workers=0,
+                seed=2006,
+            )
+            trainloader, valloader = getDataloader(args)
+            self.assertEqual(trainloader.batch_size, 4)
+            self.assertEqual(valloader.batch_size, 4)
+            self.assertEqual(valloader.num_workers, 0)
 
 
 if __name__ == "__main__":

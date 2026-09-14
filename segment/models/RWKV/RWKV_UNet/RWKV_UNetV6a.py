@@ -241,6 +241,17 @@ class RWKV_UNetV6a(RWKV_UNetV6):
         )
         _replace_v6_scans(self, backend)
         self.matrix_state_backend = backend
+        self._v6_reference_kwargs = {
+            "input_channels": input_channels,
+            "num_classes": num_classes,
+            "stem_dim": stem_dim,
+            "depths": tuple(depths),
+            "embed_dims": tuple(embed_dims),
+            "exp_ratios": tuple(exp_ratios),
+            "num_heads": tuple(num_heads),
+            "matrix_state_stages": tuple(matrix_state_stages),
+            "drop_path_rate": drop_path_rate,
+        }
 
         print("RWKV_UNetV6a")
         if backend == "cuda":
@@ -248,6 +259,13 @@ class RWKV_UNetV6a(RWKV_UNetV6):
             print("CUDA extension: loaded successfully")
         else:
             print("Matrix-State backend: reference")
+
+    def to_v6_reference(self) -> RWKV_UNetV6:
+        """Create the checkpoint-identical CUDA-free model used for deployment."""
+        reference = RWKV_UNetV6(**self._v6_reference_kwargs)
+        reference.load_state_dict(self.state_dict(), strict=True)
+        reference.train(self.training)
+        return reference
 
 
 def rwkv_unet_v6a(

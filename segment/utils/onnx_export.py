@@ -16,7 +16,9 @@ from torch import nn
 from segment.utils.preprocessing import resolve_target_hw
 
 
-SUPPORTED_AUTO_EXPORT_MODELS = frozenset({"RWKV_UNetV3", "RWKV_UNetV5", "RWKV_UNetV6"})
+SUPPORTED_AUTO_EXPORT_MODELS = frozenset(
+    {"RWKV_UNetV3", "RWKV_UNetV5", "RWKV_UNetV6", "RWKV_UNetV6a"}
+)
 ONNX_OPSET = 17
 
 
@@ -210,6 +212,11 @@ def export_segment_onnx(
     output_path = Path(output_path).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     source_model = model.module if isinstance(model, nn.DataParallel) else model
+    to_v6_reference = getattr(source_model, "to_v6_reference", None)
+    if callable(to_v6_reference):
+        # V6a accelerates training only. Export the strict-compatible original
+        # V6 graph so deployment never depends on nvcc or a custom CUDA op.
+        source_model = to_v6_reference()
     # Torch 2.4 can mix CUDA and CPU shape tensors while tracing F.interpolate.
     # Export an isolated CPU copy so ONNX creation never mutates or interrupts the live trainer.
     export_model = deepcopy(source_model).float().cpu().eval()

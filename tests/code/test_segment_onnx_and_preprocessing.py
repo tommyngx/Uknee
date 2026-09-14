@@ -23,6 +23,7 @@ from segment.dataloader.image_io import read_rgb_image
 from segment.deploy.app_function import predict_mask
 from segment.models import MODEL_REGISTRY, load_model_id
 from segment.utils.onnx_export import (
+    SUPPORTED_AUTO_EXPORT_MODELS,
     _parity_statistics,
     _validate_parity_statistics,
     export_segment_onnx,
@@ -76,6 +77,8 @@ class SegmentONNXAndPreprocessingTests(unittest.TestCase):
         self.assertEqual(load_model_id("RWKV_UNetV6")[0], 125)
         self.assertEqual(onnx_filename("RWKV_UNetV5"), "rwkv_unetv5.onnx")
         self.assertEqual(onnx_filename("RWKV_UNetV6"), "rwkv_unetv6.onnx")
+        self.assertIn("RWKV_UNetV6a", SUPPORTED_AUTO_EXPORT_MODELS)
+        self.assertEqual(onnx_filename("RWKV_UNetV6a"), "rwkv_unetv6a.onnx")
 
     def test_rwkv_v6_default_uses_only_bottleneck_matrix_state(self):
         from segment.models.RWKV.RWKV_UNet.RWKV_UNetV3 import rwkv_unetv3
@@ -203,6 +206,40 @@ class SegmentONNXAndPreprocessingTests(unittest.TestCase):
             session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
             output = session.run(["logits"], {"images": np.zeros((2, 3, 32, 32), dtype=np.float32)})[0]
             self.assertEqual(output.shape, (2, 3, 32, 32))
+
+    def test_rwkv_v6a_exports_through_cuda_free_v6_reference(self):
+        from segment.models.RWKV.RWKV_UNet.RWKV_UNetV6 import RWKV_UNetV6
+        from segment.models.RWKV.RWKV_UNet.RWKV_UNetV6a import RWKV_UNetV6a
+
+        model = RWKV_UNetV6a(
+            input_channels=1,
+            num_classes=2,
+            stem_dim=8,
+            depths=(1, 1, 1, 2),
+            embed_dims=(8, 12, 16, 24),
+            exp_ratios=(2.0, 2.0, 2.0, 2.0),
+            num_heads=(1, 1, 2, 3),
+            drop_path_rate=0.0,
+            matrix_state_backend="reference",
+        ).eval()
+        reference = model.to_v6_reference()
+        self.assertIs(type(reference), RWKV_UNetV6)
+        self.assertEqual(list(reference.state_dict()), list(model.state_dict()))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rwkv_unetv6a.onnx"
+            args = SimpleNamespace(
+                model="RWKV_UNetV6a",
+                img_size=32,
+                input_channel=1,
+                num_classes=2,
+            )
+            record = export_segment_onnx(model, args, path, validate=True)
+            self.assertEqual(record["status"], "ready")
+            self.assertTrue(record["parity"]["validated"])
+            self.assertEqual(
+                read_onnx_metadata(path)["uknee.model_name"],
+                "RWKV_UNetV6a",
+            )
 
 
 if __name__ == "__main__":

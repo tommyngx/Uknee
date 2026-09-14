@@ -203,9 +203,9 @@ def getDataloader(args):
     )
     valloader = DataLoader(
         db_val,
-        batch_size=1,
+        batch_size=args.batch_size,
         shuffle=False,
-        num_workers=min(workers, 1),
+        num_workers=workers,
         worker_init_fn=seed_worker if workers else None,
         generator=generator,
     )
