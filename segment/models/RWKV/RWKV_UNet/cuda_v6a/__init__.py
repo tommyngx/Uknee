@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,40 @@ _EXTENSION = None
 _LOAD_ERROR: Optional[BaseException] = None
 _LIB_DEF = None
 _LIB_IMPL = None
+
+
+def _configure_cuda_home() -> Optional[Path]:
+    """Prefer the installed toolkit matching the CUDA version of PyTorch."""
+    pytorch_cuda = torch.version.cuda
+    if not pytorch_cuda:
+        return None
+
+    override = os.environ.get("RWKV_V6A_CUDA_HOME")
+    exact_system_toolkit = Path(f"/usr/local/cuda-{pytorch_cuda}")
+    configured = os.environ.get("CUDA_HOME")
+    candidates = [
+        Path(override).expanduser() if override else None,
+        exact_system_toolkit,
+        Path(configured).expanduser() if configured else None,
+    ]
+    selected = next(
+        (
+            candidate.resolve()
+            for candidate in candidates
+            if candidate is not None and (candidate / "bin" / "nvcc").is_file()
+        ),
+        None,
+    )
+    if selected is None:
+        return None
+
+    # cpp_extension caches CUDA_HOME when it is imported. Update both the
+    # environment and that cached value before invoking its load() function.
+    import torch.utils.cpp_extension as cpp_extension
+
+    os.environ["CUDA_HOME"] = str(selected)
+    cpp_extension.CUDA_HOME = str(selected)
+    return selected
 
 
 def _validate_cuda_inputs(
@@ -136,10 +171,14 @@ def ensure_loaded():
                 "RWKV V6a CUDA backend requires a CUDA-enabled PyTorch build"
             )
 
+        cuda_home = _configure_cuda_home()
+        if cuda_home is not None:
+            print(f"RWKV V6a CUDA toolkit: {cuda_home} (PyTorch CUDA {torch.version.cuda})")
+
         source_dir = Path(__file__).resolve().parent
         try:
             extension = load_wkv_extension(
-                name="uknee_rwkv6a_matrix_cuda",
+                name=f"uknee_rwkv6a_matrix_cuda_cu{torch.version.cuda.replace('.', '')}",
                 sources=[
                     str(source_dir / "wkv6a_matrix_op.cpp"),
                     str(source_dir / "wkv6a_matrix_cuda.cu"),
