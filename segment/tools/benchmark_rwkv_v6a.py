@@ -187,6 +187,8 @@ def main() -> None:
     args = parse_args()
     if not torch.cuda.is_available():
         raise RuntimeError("This validation/benchmark must run on an NVIDIA CUDA machine")
+    environment = environment_report()
+    print(json.dumps({"environment": environment}, indent=2, default=str), flush=True)
     extension = custom_op()  # Builds once, then reuses PyTorch's extension cache.
     opcheck_args = tuple(
         tensor.contiguous()
@@ -198,7 +200,7 @@ def main() -> None:
         )
     )
     result = {
-        "environment": environment_report(),
+        "environment": environment,
         "opcheck": torch.library.opcheck(extension, opcheck_args),
         "fp32_parity": [parity_case((1, length, 6, 90), torch.float32) for length in (16, 28, 32, 45, 64)],
         "scan_benchmark": scan_benchmark(16, args.warmup, args.iterations),

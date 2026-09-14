@@ -101,6 +101,21 @@ def _register_custom_op(extension) -> None:
     )
 
 
+def _smoke_test_extension(extension) -> None:
+    """Launch one tiny recurrence on every visible GPU before reporting success."""
+    for device_index in range(torch.cuda.device_count()):
+        device = torch.device("cuda", device_index)
+        with torch.cuda.device(device):
+            value = torch.ones((1, 1, 1, 1), device=device, dtype=torch.float32)
+            output, states = extension.forward(value, value, value, value)
+            torch.cuda.synchronize(device)
+            if output.item() != 1.0 or states.item() != 1.0:
+                raise RuntimeError(
+                    "RWKV V6a CUDA startup smoke test produced an invalid result "
+                    f"on {device}: output={output.item()}, state={states.item()}"
+                )
+
+
 def ensure_loaded():
     """Build/load the extension once and register its CUDA custom operator."""
     global _EXTENSION, _LOAD_ERROR
@@ -132,13 +147,15 @@ def ensure_loaded():
                 extra_cuda_cflags=["-O2"],
             )
             _register_custom_op(extension)
+            _smoke_test_extension(extension)
             _EXTENSION = extension
         except BaseException as exc:
             _LOAD_ERROR = exc
             raise RuntimeError(
-                "Failed to build/load the RWKV V6a CUDA extension. Check that nvcc, "
-                "a compatible C++ compiler, and the CUDA toolkit matching PyTorch "
-                f"({torch.version.cuda}) are available. Set RWKV_VERBOSE_BUILD=1 for details."
+                "Failed to build, load, or launch the RWKV V6a CUDA extension. "
+                "Check that the NVIDIA driver supports the selected CUDA toolkit, "
+                "and that nvcc/CUDA_HOME match the CUDA version used by PyTorch "
+                f"({torch.version.cuda}). Set RWKV_VERBOSE_BUILD=1 for details."
             ) from exc
     return _EXTENSION
 
