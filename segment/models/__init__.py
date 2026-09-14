@@ -135,6 +135,7 @@ MODEL_REGISTRY = {
     "RWKV_UNetV4": (".RWKV.RWKV_UNet.RWKV_UNetV4", "rwkv_unetv4"),
     "RWKV_UNetV5": (".RWKV.RWKV_UNet.RWKV_UNetV5", "med_axial_rwkv5_unet"),
     "RWKV_UNetV6": (".RWKV.RWKV_UNet.RWKV_UNetV6", "rwkv_unet_v6"),
+    "RWKV_UNetV6a": (".RWKV.RWKV_UNet.RWKV_UNetV6a", "rwkv_unet_v6a"),
     "RWKV_UNetV2_Ablation": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_ablation"),
     "RWKV_UNetV2_NoDS": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_nods"),
     "RWKV_UNetV2_NoBoundary": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_noboundary"),
