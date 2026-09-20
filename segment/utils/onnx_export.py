@@ -17,7 +17,7 @@ from segment.utils.preprocessing import resolve_target_hw
 
 
 SUPPORTED_AUTO_EXPORT_MODELS = frozenset(
-    {"RWKV_UNetV3", "RWKV_UNetV5", "RWKV_UNetV6", "RWKV_UNetV6a"}
+    {"RWKV_UNetV3", "RWKV_UNetV5", "RWKV_UNetV6", "RWKV_UNetV6a", "RWKV_UNetV6b"}
 )
 ONNX_OPSET = 17
 
@@ -93,7 +93,7 @@ def onnx_filename(model_name: str) -> str:
 def segment_preprocess_schema(args) -> dict:
     height, width = resolve_target_hw(getattr(args, "img_size", 256))
     channels = int(getattr(args, "input_channel", 3))
-    return {
+    schema = {
         "schema_version": 1,
         "source_spatial_shape": "dynamic",
         "network_input_shape": [1, channels, height, width],
@@ -116,6 +116,18 @@ def segment_preprocess_schema(args) -> dict:
             "mask_interpolation": "nearest",
         },
     }
+    if str(getattr(args, "model", "")) == "RWKV_UNetV6b":
+        source_h, source_w = resolve_target_hw(getattr(args, "source_size", [height, width]))
+        global_h, global_w = resolve_target_hw(getattr(args, "global_size", [720, 448]))
+        local_size = int(getattr(args, "local_size", 640))
+        schema["global_local"] = {
+            "shared_weights": True,
+            "global_view_hw": [global_h, global_w],
+            "local_crop_hw": [local_size, local_size],
+            "local_crop_yx": [(source_h - local_size) // 2, (source_w - local_size) // 2],
+            "composition": "local_logits_replace_global_logits",
+        }
+    return schema
 
 
 def build_segment_onnx_metadata(args, class_names=None) -> dict[str, str]:

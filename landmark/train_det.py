@@ -824,6 +824,10 @@ def main(argv: list[str] | None = None) -> Any:
     # Non-square detection remains valid, but mosaic/multi-scale require a square canvas in this runtime.
     if config["imgsz"][0] != config["imgsz"][1]:
         config.update(mosaic=0.0, multi_scale=0.0, rect=False)
+    if str(config.get("resize_mode", "auto")).lower() == "letterbox":
+        # Letterbox is a fixed-canvas path. Mosaic would replace the source
+        # canvas before padding and multi-scale would invalidate the contract.
+        config.update(mosaic=0.0, multi_scale=0.0, rect=False)
 
     if audit["boundary_overflow_boxes"]:
         print(

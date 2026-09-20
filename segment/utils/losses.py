@@ -5,7 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-__all__ = ['one_hot', 'BCEDiceLoss', 'DiceLoss', 'DiceCELoss']
+__all__ = [
+    'one_hot', 'BCEDiceLoss', 'DiceLoss', 'DiceCELoss',
+    'OsteophyteFocalTverskyCELoss',
+]
 
 
 def one_hot(target, num_classes):
@@ -99,6 +102,84 @@ class DiceCELoss(nn.Module):
             ce_loss = self.ce(inputs, target.long())
             dice_loss = self.dice(inputs, target, softmax=True)
         return self.lambda_ce * ce_loss + self.lambda_dice * dice_loss
+
+
+class OsteophyteFocalTverskyCELoss(nn.Module):
+    """Cross-entropy for every class plus Focal Tversky on selected channels."""
+
+    def __init__(
+        self,
+        n_classes,
+        osteophyte_class_ids=(6, 7, 8, 9),
+        fp_weight=0.30,
+        fn_weight=0.70,
+        gamma=1.30,
+        smooth=1e-6,
+        lambda_ft=1.0,
+    ):
+        super().__init__()
+        self.n_classes = int(n_classes)
+        self.osteophyte_class_ids = tuple(int(value) for value in osteophyte_class_ids)
+        if not self.osteophyte_class_ids:
+            raise ValueError("osteophyte_class_ids must not be empty")
+        if min(self.osteophyte_class_ids) < 0 or max(self.osteophyte_class_ids) >= self.n_classes:
+            raise ValueError(
+                f"osteophyte_class_ids={self.osteophyte_class_ids} must be within "
+                f"[0, {self.n_classes - 1}]"
+            )
+        self.fp_weight = float(fp_weight)
+        self.fn_weight = float(fn_weight)
+        self.gamma = float(gamma)
+        self.smooth = float(smooth)
+        self.lambda_ft = float(lambda_ft)
+        if self.fp_weight < 0 or self.fn_weight < 0:
+            raise ValueError("Focal Tversky FP/FN weights must be non-negative")
+        if self.gamma <= 0 or self.smooth <= 0 or self.lambda_ft < 0:
+            raise ValueError("gamma and smooth must be positive; lambda_ft must be non-negative")
+
+    def focal_tversky(self, inputs, target):
+        probabilities = torch.softmax(inputs, dim=1)
+        targets = one_hot(target, self.n_classes).to(device=inputs.device, dtype=inputs.dtype)
+        channels = torch.as_tensor(
+            self.osteophyte_class_ids, device=inputs.device, dtype=torch.long
+        )
+        probabilities = probabilities.index_select(1, channels)
+        targets = targets.index_select(1, channels)
+        reduce_dims = tuple(range(2, inputs.ndim))
+        true_positive = (probabilities * targets).sum(dim=reduce_dims)
+        false_positive = (probabilities * (1.0 - targets)).sum(dim=reduce_dims)
+        false_negative = ((1.0 - probabilities) * targets).sum(dim=reduce_dims)
+        score = (true_positive + self.smooth) / (
+            true_positive
+            + self.fp_weight * false_positive
+            + self.fn_weight * false_negative
+            + self.smooth
+        )
+        positive_loss = (1.0 - score).pow(self.gamma)
+        spatial_elements = 1
+        for size in inputs.shape[2:]:
+            spatial_elements *= int(size)
+        # A target-empty channel has no FN term. Use its mean predicted
+        # probability as an explicit, stable false-positive penalty rather
+        # than ignoring the channel or relying on a smoothing-dominated ratio.
+        negative_loss = (
+            self.fp_weight * false_positive / max(spatial_elements, 1)
+        ).pow(self.gamma)
+        has_positive_target = targets.sum(dim=reduce_dims) > 0
+        return torch.where(has_positive_target, positive_loss, negative_loss).mean()
+
+    def forward(self, inputs, target):
+        if inputs.shape[1] != self.n_classes:
+            raise ValueError(
+                f"Expected {self.n_classes} logit channels, received {inputs.shape[1]}"
+            )
+        if target.ndim == inputs.ndim and target.size(1) == 1:
+            target = target[:, 0]
+        elif target.ndim == inputs.ndim and target.size(1) == inputs.shape[1]:
+            target = torch.argmax(target, dim=1)
+        target = target.long()
+        base_loss = F.cross_entropy(inputs, target)
+        return base_loss + self.lambda_ft * self.focal_tversky(inputs, target)
 
 
 def compute_kl_loss(p, q):

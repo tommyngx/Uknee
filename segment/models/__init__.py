@@ -136,6 +136,7 @@ MODEL_REGISTRY = {
     "RWKV_UNetV5": (".RWKV.RWKV_UNet.RWKV_UNetV5", "med_axial_rwkv5_unet"),
     "RWKV_UNetV6": (".RWKV.RWKV_UNet.RWKV_UNetV6", "rwkv_unet_v6"),
     "RWKV_UNetV6a": (".RWKV.RWKV_UNet.RWKV_UNetV6a", "rwkv_unet_v6a"),
+    "RWKV_UNetV6b": (".RWKV.RWKV_UNet.RWKV_UNetV6b", "rwkv_unet_v6b"),
     "RWKV_UNetV2_Ablation": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_ablation"),
     "RWKV_UNetV2_NoDS": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_nods"),
     "RWKV_UNetV2_NoBoundary": (".RWKV.RWKV_UNet.RWKV_UNetV2_ablation", "rwkv_unetv2_noboundary"),
@@ -250,6 +251,12 @@ def build_model(config, **kwargs):
     if model_name == "RWKV_UNetV2":
         kwargs = dict(kwargs)
         kwargs["deep_supervision"] = bool(getattr(config, "do_deeps", False))
+
+    if model_name == "RWKV_UNetV6b":
+        kwargs = dict(kwargs)
+        for name in ("source_size", "global_size", "local_size"):
+            if hasattr(config, name) and name not in kwargs:
+                kwargs[name] = getattr(config, name)
 
     model_factory = _load_model_factory(model_name)
     if debug:

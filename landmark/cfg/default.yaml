@@ -10,6 +10,7 @@ time:
 patience: 300
 batch: 16
 imgsz: [640, 512]  # [height, width]
+resize_mode: auto  # auto or letterbox; detection preset may force aspect-preserving padding
 save: true
 save_period: -1
 cache: false

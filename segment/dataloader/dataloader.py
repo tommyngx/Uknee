@@ -26,6 +26,7 @@ from segment.dataloader.dataset import (
 )
 from segment.dataloader.dataset_mesko import Mesko5SegDataset, is_mesko_dataset
 from segment.dataloader.dataset_pheno import PhenoSegDataset, is_pheno_dataset
+from segment.dataloader.osteophyte import OsteophyteOnlyDataset
 from segment.utils.medsegbench import INFO as MedSegBench_dataset_name_dict
 from segment.utils.medsegbench import get_MedSegBench_dataset
 import torch
@@ -186,6 +187,9 @@ def getDataloader(args):
         print(" data error  \n\n\n")
         exit()
         return 0
+    if getattr(args, "model", "") == "RWKV_UNetV6b" and getattr(args, "osteophyte_only", True):
+        db_train = OsteophyteOnlyDataset(db_train)
+        db_val = OsteophyteOnlyDataset(db_val)
     if uses_aug_policy:
         print(f"augmentation strategy:{resolved_aug_strategy}")
     print(f"train num:{len(db_train)}, val num:{len(db_val)}")
@@ -264,5 +268,7 @@ def getZeroShotDataloader(args):
         print(f"zero shot data error {args.zero_shot_base_dir} \n\n\n")
         exit()
         return 0
+    if getattr(args, "model", "") == "RWKV_UNetV6b" and getattr(args, "osteophyte_only", True):
+        db_val = OsteophyteOnlyDataset(db_val)
     valloader = DataLoader(db_val, batch_size=1, shuffle=False,num_workers=1)
     return valloader

@@ -128,6 +128,9 @@ def seed_torch(seed):
 
 def parse_arguments(argv=None):
     args = parse_segment_args(argv)
+    if args.model == "RWKV_UNetV6b" and args.osteophyte_only:
+        # Specialist output: explicit background plus four osteophyte classes.
+        args.num_classes = 5
     try:
         from segment.dataloader.dataset_pheno import (
             infer_pheno_num_classes,
@@ -135,7 +138,9 @@ def parse_arguments(argv=None):
         )
         from segment.dataloader.dataset_mesko import infer_mesko_num_classes, is_mesko_dataset
 
-        if is_pheno_dataset(args.base_dir, args.dataset_name):
+        if args.model == "RWKV_UNetV6b" and args.osteophyte_only:
+            pass
+        elif is_pheno_dataset(args.base_dir, args.dataset_name):
             inferred_num_classes = infer_pheno_num_classes(args.base_dir)
             if inferred_num_classes and inferred_num_classes > 1 and int(args.num_classes) != inferred_num_classes:
                 print(
@@ -205,6 +210,11 @@ def _load_model_state_dict(model, state_dict, logger=None, *, strict=False):
             break
         current = {key.removeprefix(prefix): value for key, value in current.items()}
         variants.append(current)
+    if model_state and all(key.startswith("core.") for key in model_state):
+        # V6b can initialise its one shared core directly from a V6/V6a checkpoint.
+        for variant in tuple(variants):
+            if variant and not any(key.startswith("core.") for key in variant):
+                variants.append({f"core.{key}": value for key, value in variant.items()})
     state_dict = max(
         variants,
         key=lambda state: sum(
@@ -274,6 +284,27 @@ def _validate_runtime_config(args):
             f"Dataset folder does not exist: {args.base_dir}. "
             "Use an absolute path or /name for <project>/data/name."
         )
+    if args.model == "RWKV_UNetV6b":
+        source_height, source_width = resolve_target_hw(args.source_size)
+        global_height, global_width = resolve_target_hw(args.global_size)
+        local_size = int(args.local_size)
+        if (height, width) != (source_height, source_width):
+            raise ValueError(
+                "RWKV_UNetV6b requires img_size and source_size to match in [height, width] order; "
+                f"received img_size={args.img_size}, source_size={args.source_size}."
+            )
+        if local_size > min(source_height, source_width):
+            raise ValueError("local_size must fit inside source_size")
+        if min(global_height, global_width, local_size) <= 0:
+            raise ValueError("global_size and local_size must be positive")
+        if args.osteophyte_only and int(args.num_classes) != 5:
+            raise ValueError("RWKV_UNetV6b osteophyte-only mode uses 5 output classes")
+        max_jitter = (source_height - local_size) // 2
+        if not 0 <= int(args.local_crop_jitter) <= max_jitter:
+            raise ValueError(f"local_crop_jitter must be between 0 and {max_jitter} pixels")
+        for name in ("lambda_global", "lambda_local", "lambda_ft"):
+            if float(getattr(args, name)) < 0:
+                raise ValueError(f"{name} must be non-negative")
     if args.model == "RWKV_UNet" and longest_side > 256:
         raise ValueError(
             "RWKV_UNet in this repo only supports img_size <= 256. "
@@ -312,9 +343,44 @@ def deep_supervision_loss(outputs, label_batch, loss_metric,weights=None):
 
 
 def _build_criterion(args):
+    if getattr(args, "loss", "auto") == "osteophyte_focal_tversky_ce":
+        return losses.OsteophyteFocalTverskyCELoss(
+            n_classes=args.num_classes,
+            osteophyte_class_ids=args.osteophyte_class_ids,
+            fp_weight=args.focal_tversky_fp_weight,
+            fn_weight=args.focal_tversky_fn_weight,
+            gamma=args.focal_tversky_gamma,
+            smooth=args.focal_tversky_smooth,
+            lambda_ft=args.lambda_ft,
+        ).to(device), "OsteophyteFocalTverskyCELoss"
     if int(args.num_classes) > 1:
         return losses.__dict__['DiceCELoss'](n_classes=args.num_classes).to(device), "DiceCELoss"
     return losses.__dict__['BCEDiceLoss']().to(device), "BCEDiceLoss"
+
+
+def _v6b_forward_and_loss(args, model, images, targets, criterion, *, training):
+    """Apply branch-aligned masks and the configured global + local loss."""
+    jitter_limit = int(args.local_crop_jitter)
+    jitter = random.randint(-jitter_limit, jitter_limit) if training else 0
+    branches = model(images, return_branches=True, jitter_y=jitter)
+    source_h, source_w = targets.shape[-2:]
+    global_size = resolve_target_hw(args.global_size)
+    local_size = int(args.local_size)
+    crop_y0 = (source_h - local_size) // 2 + jitter
+    crop_x0 = (source_w - local_size) // 2
+    global_targets = F.interpolate(
+        targets.unsqueeze(1).float(), size=global_size, mode="nearest"
+    ).squeeze(1).long()
+    local_targets = targets[
+        ..., crop_y0:crop_y0 + local_size, crop_x0:crop_x0 + local_size
+    ]
+    global_loss = criterion(branches["global_logits"], global_targets)
+    local_loss = criterion(branches["local_logits"], local_targets)
+    total_loss = (
+        float(args.lambda_global) * global_loss
+        + float(args.lambda_local) * local_loss
+    )
+    return branches["out"], total_loss
 
 
 def _as_float(value):
@@ -491,9 +557,14 @@ def zero_shot(args,logger,model=None):
             input, target = sampled_batch['image'], sampled_batch['label']
             input = input.to(device)
             target = target.to(device)
-            output = model(input)
-            output = output[-1] if args.do_deeps else output
-            loss = criterion(output, target)
+            if args.model == "RWKV_UNetV6b":
+                output, loss = _v6b_forward_and_loss(
+                    args, model, input, target, criterion, training=False
+                )
+            else:
+                output = model(input)
+                output = output[-1] if args.do_deeps else output
+                loss = criterion(output, target)
             
             iou, _, SE, PC, F1, _, ACC = get_metrics(output, target)
             avg_meters['val_loss'].update(loss.item(), input.size(0))
@@ -578,9 +649,10 @@ def init_dir(args):
 
 
 def _dataset_class_names(dataset):
-    while hasattr(dataset, "dataset"):
-        dataset = dataset.dataset
     class_info = getattr(dataset, "class_info", None)
+    while not class_info and hasattr(dataset, "dataset"):
+        dataset = dataset.dataset
+        class_info = getattr(dataset, "class_info", None)
     if class_info:
         return [item.get("name", f"Region {index}") for index, item in enumerate(class_info)]
     return None
@@ -668,9 +740,14 @@ def _validate_epoch(args, model, valloader, criterion, sample_indices=()):
             input, target = sampled_batch['image'], sampled_batch['label']
             input = input.to(device)
             target = target.to(device)
-            output = model(input)
-            output = output[-1] if args.do_deeps else output
-            loss = criterion(output, target)
+            if args.model == "RWKV_UNetV6b":
+                output, loss = _v6b_forward_and_loss(
+                    args, model, input, target, criterion, training=False
+                )
+            else:
+                output = model(input)
+                output = output[-1] if args.do_deeps else output
+                loss = criterion(output, target)
             if not torch.isfinite(output).all() or not torch.isfinite(loss):
                 raise RuntimeError(f"Non-finite validation result in batch {i_batch}")
             val_loss.update(loss.item(), input.size(0))
@@ -781,7 +858,11 @@ def train(args, exp_save_dir, log_dir, history_writer, logger, model):
                 group["lr"] = learning_rate
             images = sampled_batch["image"].to(device)
             targets = sampled_batch["label"].to(device)
-            if args.do_deeps:
+            if args.model == "RWKV_UNetV6b":
+                final_output, loss = _v6b_forward_and_loss(
+                    args, model, images, targets, criterion, training=True
+                )
+            elif args.do_deeps:
                 outputs = model(images)
                 loss = deep_supervision_loss(outputs, targets, criterion)
                 final_output = outputs[-1]

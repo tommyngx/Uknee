@@ -116,6 +116,8 @@ def check_cfg(cfg: dict[str, Any], hard: bool = True) -> None:
             cfg[key] = bool(value)
         elif key == "quantize" and str(value).lower() not in {"8", "16", "32", "int8", "fp16", "fp32"}:
             raise ValueError("'quantize' must be one of 8, 16, 32, int8, fp16 or fp32")
+        elif key == "resize_mode" and str(value).lower() not in {"auto", "letterbox"}:
+            raise ValueError("'resize_mode' must be either 'auto' or 'letterbox'")
 
 
 def get_cfg(

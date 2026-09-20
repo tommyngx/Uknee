@@ -12,6 +12,8 @@ epochs: 2
 seed: 2006
 imgsz: [256, 256]  # [height, width]
 num_classes: 1
+lambda_local: 1.0       # RWKV_UNetV6b local-branch loss weight
+local_crop_jitter: 32   # RWKV_UNetV6b training-only vertical pixels
 input_channel: 3
 aug_strategy: auto
 resume: false

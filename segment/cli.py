@@ -26,6 +26,13 @@ def _str2bool(value):
     raise argparse.ArgumentTypeError(f"Expected a boolean value, received: {value}")
 
 
+def _int_list(value):
+    if isinstance(value, (list, tuple)):
+        return [int(item) for item in value]
+    text = str(value).strip().strip("[]")
+    return [int(item.strip()) for item in text.split(",") if item.strip()]
+
+
 def _load_defaults(config_path: str | Path) -> dict:
     path = Path(config_path).expanduser().resolve()
     values = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -53,6 +60,20 @@ def build_parser(defaults: dict | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=values["seed"])
     parser.add_argument("--imgsz", "--imgz", "--img_size", dest="imgsz", type=parse_image_size, default=parse_image_size(values["imgsz"]))
     parser.add_argument("--num_classes", type=int, default=values["num_classes"])
+    parser.add_argument("--loss", default=values.get("loss", "auto"))
+    parser.add_argument("--osteophyte_only", action=argparse.BooleanOptionalAction, default=values.get("osteophyte_only", True))
+    parser.add_argument("--source_size", type=parse_image_size, default=parse_image_size(values.get("source_size", values["imgsz"])))
+    parser.add_argument("--global_size", type=parse_image_size, default=parse_image_size(values.get("global_size", [720, 448])))
+    parser.add_argument("--local_size", type=int, default=int(values.get("local_size", 640)))
+    parser.add_argument("--lambda_global", type=float, default=values.get("lambda_global", 1.0))
+    parser.add_argument("--lambda_local", type=float, default=values.get("lambda_local", 1.0))
+    parser.add_argument("--local_crop_jitter", "--local_crop_jitter_y", dest="local_crop_jitter", type=int, default=values.get("local_crop_jitter_y", values.get("local_crop_jitter", 32)))
+    parser.add_argument("--osteophyte_class_ids", type=_int_list, default=_int_list(values.get("osteophyte_class_ids", [6, 7, 8, 9])))
+    parser.add_argument("--focal_tversky_fp_weight", type=float, default=values.get("focal_tversky_fp_weight", 0.30))
+    parser.add_argument("--focal_tversky_fn_weight", type=float, default=values.get("focal_tversky_fn_weight", 0.70))
+    parser.add_argument("--focal_tversky_gamma", type=float, default=values.get("focal_tversky_gamma", 1.30))
+    parser.add_argument("--focal_tversky_smooth", type=float, default=values.get("focal_tversky_smooth", 1e-6))
+    parser.add_argument("--lambda_ft", type=float, default=values.get("lambda_ft", 1.0))
     parser.add_argument("--input_channel", type=int, default=values["input_channel"])
     parser.add_argument("--aug_strategy", choices=("auto", "none", "basic", "standard", "strong", "xray"), default=values["aug_strategy"])
     parser.add_argument("--resume", action="store_true", default=values["resume"])
@@ -92,6 +113,8 @@ def parse_segment_args(argv: list[str] | None = None):
     args.dataset_name = args.dataset_name if dataset_name_is_explicit else dataset.name
     args.imgsz = parse_image_size(args.imgsz)
     args.img_size = list(args.imgsz)  # legacy model/dataloader name, always [H, W]
+    args.source_size = parse_image_size(args.source_size)
+    args.global_size = parse_image_size(args.global_size)
     args.gpu_ids = parse_gpu_ids(args.gpu)
     args.gpu = ",".join(map(str, args.gpu_ids)) if args.gpu_ids != [-1] else ""
     args.batch_size = int(args.batch)

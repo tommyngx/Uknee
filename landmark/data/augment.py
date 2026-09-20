@@ -2736,7 +2736,6 @@ def v8_transforms(dataset, imgsz: int, hyp: IterableSimpleNamespace):
     """
     target_h, target_w = tuple(imgsz) if isinstance(imgsz, (list, tuple)) else (imgsz, imgsz)
     mosaic_imgsz = max(target_h, target_w)
-    mosaic = Mosaic(dataset, imgsz=mosaic_imgsz, p=hyp.mosaic)
     affine = RandomPerspective(
         degrees=hyp.degrees,
         translate=hyp.translate,
@@ -2746,14 +2745,27 @@ def v8_transforms(dataset, imgsz: int, hyp: IterableSimpleNamespace):
         size=(target_w, target_h),
     )
 
-    pre_transform = Compose([mosaic, affine])
+    if str(getattr(hyp, "resize_mode", "auto")).lower() == "letterbox":
+        # Explicitly preserve anatomy before affine augmentation. RandomPerspective
+        # then operates on the fixed canvas with a uniform scale, never a stretch.
+        pre_transform = Compose([
+            LetterBox(new_shape=(target_h, target_w), scaleup=True),
+            affine,
+        ])
+    else:
+        pre_transform = Compose([Mosaic(dataset, imgsz=mosaic_imgsz, p=hyp.mosaic), affine])
     if hyp.copy_paste_mode == "flip":
         pre_transform.insert(1, CopyPaste(dataset, p=hyp.copy_paste, mode=hyp.copy_paste_mode))
     else:
+        secondary_pre_transform = (
+            Compose([LetterBox(new_shape=(target_h, target_w), scaleup=True), affine])
+            if str(getattr(hyp, "resize_mode", "auto")).lower() == "letterbox"
+            else Compose([Mosaic(dataset, imgsz=mosaic_imgsz, p=hyp.mosaic), affine])
+        )
         pre_transform.append(
             CopyPaste(
                 dataset,
-                pre_transform=Compose([Mosaic(dataset, imgsz=mosaic_imgsz, p=hyp.mosaic), affine]),
+                pre_transform=secondary_pre_transform,
                 p=hyp.copy_paste,
                 mode=hyp.copy_paste_mode,
             )

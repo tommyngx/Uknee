@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 import yaml
+import numpy as np
 from PIL import Image
 
 from landmark.train_det import (
@@ -19,6 +20,8 @@ from landmark.train_det import (
     write_detection_summary,
 )
 from landmark.core.detect import DetectionTrainer
+from landmark.core.config import get_cfg
+from landmark.data.augment import LetterBox, v8_transforms
 from landmark.nn.modules.head import Detect
 from landmark.utils.exporting import KneeDetectionExportWrapper
 
@@ -57,6 +60,39 @@ class DetectionTrainingTests(unittest.TestCase):
         self.assertEqual(config["patience"], 200)
         self.assertEqual(config["fliplr"], 0.0)
         self.assertNotIn("pose", config)
+
+    def test_letterbox_768_preset_increases_resolution_and_cls_weight(self):
+        config_path = DEFAULT_CFG.with_name("kneelocation_letterbox_768.yaml")
+        config = _load_yaml(config_path)
+        self.assertEqual(config["imgsz"], [768, 768])
+        self.assertEqual(config["resize_mode"], "letterbox")
+        self.assertEqual(config["cls"], 0.75)
+        self.assertEqual(config["mosaic"], 0.0)
+        self.assertEqual(config["multi_scale"], 0.0)
+        self.assertEqual(config["fliplr"], 0.0)
+        resolved = get_cfg(overrides=config)
+        self.assertEqual(resolved.resize_mode, "letterbox")
+
+    def test_letterbox_mode_is_explicit_in_training_transform(self):
+        dataset = SimpleNamespace(data={}, use_keypoints=False)
+        hyp = SimpleNamespace(
+            resize_mode="letterbox", mosaic=0.0, mixup=0.0, cutmix=0.0,
+            copy_paste=0.0, copy_paste_mode="flip", degrees=0.0,
+            translate=0.0, scale=0.0, shear=0.0, perspective=0.0,
+            augmentations=None, hsv_h=0.0, hsv_s=0.0, hsv_v=0.0,
+            flipud=0.0, fliplr=0.0,
+        )
+        transforms = v8_transforms(dataset, [768, 768], hyp)
+        pre_transform = transforms.transforms[0]
+        self.assertIsInstance(pre_transform.transforms[0], LetterBox)
+
+        image = np.full((100, 200, 3), 255, dtype=np.uint8)
+        output = pre_transform.transforms[0](image=image)
+        self.assertEqual(output.shape, (768, 768, 3))
+        active = np.any(output != 114, axis=2)
+        active_rows, active_cols = np.where(active)
+        self.assertEqual((active_rows.min(), active_rows.max()), (192, 575))
+        self.assertEqual((active_cols.min(), active_cols.max()), (0, 767))
 
     def test_detection_export_contract_selects_one_box_per_class(self):
         wrapper = KneeDetectionExportWrapper(_FakeDetectionModel(), confidence=0.25).eval()
