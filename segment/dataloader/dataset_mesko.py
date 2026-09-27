@@ -67,6 +67,22 @@ def _find_dataset_yaml(base_dir):
     return yamls[0] if yamls else base_dir / "data.yaml"
 
 
+def _normalize_classes(raw_list):
+    result = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        cid = item.get("class_id") if "class_id" in item else item.get("id")
+        if cid is None:
+            continue
+        normalized = dict(item)
+        normalized["class_id"] = int(cid)
+        if "name" not in normalized:
+            normalized["name"] = f"class_{cid}"
+        result.append(normalized)
+    return sorted(result, key=lambda x: x["class_id"])
+
+
 def _load_class_info(base_dir):
     classes_path = base_dir / "classes.json"
     summary_path = base_dir / "summary.json"
@@ -76,14 +92,18 @@ def _load_class_info(base_dir):
         with classes_path.open("r", encoding="utf-8") as file:
             classes = json.load(file)
         if isinstance(classes, list):
-            return sorted(classes, key=lambda item: int(item["class_id"]))
+            parsed = _normalize_classes(classes)
+            if parsed:
+                return parsed
 
     if summary_path.is_file():
         with summary_path.open("r", encoding="utf-8") as file:
             summary = json.load(file)
         classes = summary.get("classes", [])
         if isinstance(classes, list):
-            return sorted(classes, key=lambda item: int(item["class_id"]))
+            parsed = _normalize_classes(classes)
+            if parsed:
+                return parsed
 
     data_yaml = _load_yaml(data_yaml_path)
     names = data_yaml.get("names", {})

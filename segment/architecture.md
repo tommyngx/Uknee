@@ -32,6 +32,8 @@ segment.cli -> segment.main
 - `dataloader/dataset_mesko.py`: MESKO multiclass image/mask pairing.
 - `dataloader/dataset_pheno.py`: PhenoX multiclass image/mask pairing; class
   IDs come from segmentation metadata or masks, not landmark YAML.
+- `dataloader/dataset_handoa.py`: HandOA multiclass image/mask pairing and 11-class
+  anatomical hand bone/joint taxonomy.
 - `deploy/app_function.py`: reusable inference and preprocessing API.
 
 ## Ownership map

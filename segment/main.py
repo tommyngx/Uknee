@@ -132,6 +132,10 @@ def parse_arguments(argv=None):
         # Specialist output: explicit background plus four osteophyte classes.
         args.num_classes = 5
     try:
+        from segment.dataloader.dataset_handoa import (
+            infer_handoa_num_classes,
+            is_handoa_dataset,
+        )
         from segment.dataloader.dataset_pheno import (
             infer_pheno_num_classes,
             is_pheno_dataset,
@@ -140,6 +144,14 @@ def parse_arguments(argv=None):
 
         if args.model == "RWKV_UNetV6b" and args.osteophyte_only:
             pass
+        elif is_handoa_dataset(args.base_dir, args.dataset_name):
+            inferred_num_classes = infer_handoa_num_classes(args.base_dir)
+            if inferred_num_classes and inferred_num_classes > 1 and int(args.num_classes) != inferred_num_classes:
+                print(
+                    f"Auto-updating num_classes from {args.num_classes} to "
+                    f"{inferred_num_classes} based on HandOA segmentation metadata"
+                )
+                args.num_classes = inferred_num_classes
         elif is_pheno_dataset(args.base_dir, args.dataset_name):
             inferred_num_classes = infer_pheno_num_classes(args.base_dir)
             if inferred_num_classes and inferred_num_classes > 1 and int(args.num_classes) != inferred_num_classes:
