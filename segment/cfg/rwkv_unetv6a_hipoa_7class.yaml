@@ -1,0 +1,44 @@
+# RWKV-UNet V6a configuration for HipOA 7-class anatomy segmentation.
+# Spatial values are always [height, width]. CLI values override these keys.
+model: RWKV_UNetV6a
+dataset: Ref/HipOA_segX1
+dataset_name: HipOA_segX1
+train_file_dir: train.txt
+val_file_dir: val.txt
+base_lr: 0.001
+batch: 4
+workers: 4
+gpu: [0]
+epochs: 250
+seed: 2026
+
+imgsz: [768, 624]
+num_classes: 7
+osteophyte_only: false
+input_channel: 3
+aug_strategy: xray
+
+# CE covers all anatomy classes. Focal Tversky emphasizes the small right and
+# left hip joint-space masks (IDs 1 and 2), which carry the primary OA signal.
+loss: osteophyte_focal_tversky_ce
+osteophyte_class_ids: [1, 2]
+focal_tversky_fp_weight: 0.30
+focal_tversky_fn_weight: 0.70
+focal_tversky_gamma: 1.30
+focal_tversky_smooth: 1.0e-6
+lambda_ft: 1.0
+
+resume: false
+pretrained_path: ""
+name: HipX01_768x624_rwkv6a_focal
+project: ""
+exist_ok: true
+pixel_spacing_mm: 0.10
+auto_export_onnx: true
+onnx_export_interval: 10
+zero_shot_base_dir: ""
+zero_shot_dataset_name: ""
+do_deeps: false
+model_id: 126
+just_for_test: false
+just_for_zero_shot: false

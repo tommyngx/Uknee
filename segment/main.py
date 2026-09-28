@@ -137,6 +137,7 @@ def parse_arguments(argv=None):
             is_handoa_dataset,
         )
         from segment.dataloader.dataset_hipoa import (
+            HIPOA_FOCAL_TVERSKY_CLASS_IDS,
             infer_hipoa_num_classes,
             is_hipoa_dataset,
         )
@@ -164,6 +165,15 @@ def parse_arguments(argv=None):
                     f"{inferred_num_classes} based on HipOA segmentation metadata"
                 )
                 args.num_classes = inferred_num_classes
+            if (
+                args.loss == "osteophyte_focal_tversky_ce"
+                and not args._osteophyte_class_ids_explicit
+            ):
+                args.osteophyte_class_ids = list(HIPOA_FOCAL_TVERSKY_CLASS_IDS)
+                print(
+                    "Auto-updating osteophyte_class_ids to "
+                    f"{args.osteophyte_class_ids} for HipOA joint-space classes"
+                )
         elif is_pheno_dataset(args.base_dir, args.dataset_name):
             inferred_num_classes = infer_pheno_num_classes(args.base_dir)
             if inferred_num_classes and inferred_num_classes > 1 and int(args.num_classes) != inferred_num_classes:
@@ -179,6 +189,7 @@ def parse_arguments(argv=None):
                 args.num_classes = inferred_num_classes
     except Exception as exc:
         print(f"Could not auto-configure segmentation num_classes: {exc}")
+    del args._osteophyte_class_ids_explicit
     seed_torch(args.seed)
     return args
 

@@ -13,6 +13,7 @@ from segment.dataloader.augment import build_val_transform
 from segment.dataloader.dataloader import getDataloader
 from segment.dataloader.dataset_hipoa import (
     HIPOA_DEFAULT_CLASSES,
+    HIPOA_FOCAL_TVERSKY_CLASS_IDS,
     HipOASegDataset,
     hipoa_class_ids,
     hipoa_class_info,
@@ -126,13 +127,34 @@ class HipOASegDatasetTests(unittest.TestCase):
         self.assertEqual(info[6]["name"], "left_femur")
 
     def test_parse_arguments_auto_updates_num_classes_for_hipoa(self):
+        from segment.main import _build_criterion, parse_arguments
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._make_dataset(root)
+            args = parse_arguments([
+                "--base_dir", str(root), "--num_classes", "1",
+                "--loss", "osteophyte_focal_tversky_ce",
+            ])
+            self.assertEqual(args.num_classes, 7)
+            self.assertEqual(args.osteophyte_class_ids, HIPOA_FOCAL_TVERSKY_CLASS_IDS)
+            criterion, name = _build_criterion(args)
+            self.assertEqual(name, "OsteophyteFocalTverskyCELoss")
+            self.assertEqual(criterion.osteophyte_class_ids, (1, 2))
+
+    def test_parse_arguments_preserves_explicit_hipoa_focal_classes(self):
         from segment.main import parse_arguments
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self._make_dataset(root)
-            args = parse_arguments(["--base_dir", str(root), "--num_classes", "1"])
+            args = parse_arguments([
+                "--base_dir", str(root),
+                "--loss", "osteophyte_focal_tversky_ce",
+                "--osteophyte_class_ids", "5,6",
+            ])
             self.assertEqual(args.num_classes, 7)
+            self.assertEqual(args.osteophyte_class_ids, [5, 6])
 
 
 if __name__ == "__main__":

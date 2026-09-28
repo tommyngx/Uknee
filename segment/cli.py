@@ -107,6 +107,14 @@ def parse_segment_args(argv: list[str] | None = None):
     import sys
 
     effective_argv = argv_values if argv_values is not None else sys.argv[1:]
+    args._osteophyte_class_ids_explicit = (
+        "osteophyte_class_ids" in defaults
+        or any(
+            token == "--osteophyte_class_ids"
+            or token.startswith("--osteophyte_class_ids=")
+            for token in effective_argv
+        )
+    )
     dataset_name_is_explicit = any(
         token == "--dataset_name" or token.startswith("--dataset_name=") for token in effective_argv
     )

@@ -35,6 +35,11 @@ HIPOA_DATASET_NAMES = {
     "hip",
 }
 
+# HipOA has no dedicated osteophyte mask classes yet.  For the combined
+# CE + Focal Tversky loss, emphasize the two small joint-space classes that
+# carry the primary OA signal instead of reusing KneeOA class IDs 6..9.
+HIPOA_FOCAL_TVERSKY_CLASS_IDS = [1, 2]
+
 # Standard 7 Hip OA anatomical bone & joint classes
 HIPOA_DEFAULT_CLASSES = [
     {
@@ -418,6 +423,7 @@ class HipOASegDataset(Dataset):
 __all__ = [
     "HIPOA_DATASET_NAMES",
     "HIPOA_DEFAULT_CLASSES",
+    "HIPOA_FOCAL_TVERSKY_CLASS_IDS",
     "HipOASegDataset",
     "hipoa_class_ids",
     "hipoa_class_info",
