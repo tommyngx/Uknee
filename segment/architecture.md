@@ -34,6 +34,8 @@ segment.cli -> segment.main
   IDs come from segmentation metadata or masks, not landmark YAML.
 - `dataloader/dataset_handoa.py`: HandOA multiclass image/mask pairing and 11-class
   anatomical hand bone/joint taxonomy.
+- `dataloader/dataset_hipoa.py`: HipOA multiclass image/mask pairing and 7-class
+  anatomical pelvic/hip bone/joint taxonomy.
 - `deploy/app_function.py`: reusable inference and preprocessing API.
 
 ## Ownership map

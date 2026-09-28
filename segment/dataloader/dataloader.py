@@ -25,6 +25,7 @@ from segment.dataloader.dataset import (
     PH2Dataset,
 )
 from segment.dataloader.dataset_handoa import HandOASegDataset, is_handoa_dataset
+from segment.dataloader.dataset_hipoa import HipOASegDataset, is_hipoa_dataset
 from segment.dataloader.dataset_mesko import Mesko5SegDataset, is_mesko_dataset
 from segment.dataloader.dataset_pheno import PhenoSegDataset, is_pheno_dataset
 from segment.dataloader.osteophyte import OsteophyteOnlyDataset
@@ -99,6 +100,19 @@ def getDataloader(args):
             num_classes=args.num_classes,
         )
         db_val = HandOASegDataset(
+            base_dir=args.base_dir,
+            mode="val",
+            transform=val_transform,
+            num_classes=args.num_classes,
+        )
+    elif is_hipoa_dataset(args.base_dir, args.dataset_name):
+        db_train = HipOASegDataset(
+            base_dir=args.base_dir,
+            mode="train",
+            transform=train_transform,
+            num_classes=args.num_classes,
+        )
+        db_val = HipOASegDataset(
             base_dir=args.base_dir,
             mode="val",
             transform=val_transform,
@@ -244,6 +258,13 @@ def getZeroShotDataloader(args):
         db_val = CHASEDB1Dataset(base_dir=args.zero_shot_base_dir, mode="test", transform=val_transform)
     elif is_handoa_dataset(args.zero_shot_base_dir, args.zero_shot_dataset_name):
         db_val = HandOASegDataset(
+            base_dir=args.zero_shot_base_dir,
+            mode="test",
+            transform=val_transform,
+            num_classes=args.num_classes,
+        )
+    elif is_hipoa_dataset(args.zero_shot_base_dir, args.zero_shot_dataset_name):
+        db_val = HipOASegDataset(
             base_dir=args.zero_shot_base_dir,
             mode="test",
             transform=val_transform,

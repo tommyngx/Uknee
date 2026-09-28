@@ -136,6 +136,10 @@ def parse_arguments(argv=None):
             infer_handoa_num_classes,
             is_handoa_dataset,
         )
+        from segment.dataloader.dataset_hipoa import (
+            infer_hipoa_num_classes,
+            is_hipoa_dataset,
+        )
         from segment.dataloader.dataset_pheno import (
             infer_pheno_num_classes,
             is_pheno_dataset,
@@ -150,6 +154,14 @@ def parse_arguments(argv=None):
                 print(
                     f"Auto-updating num_classes from {args.num_classes} to "
                     f"{inferred_num_classes} based on HandOA segmentation metadata"
+                )
+                args.num_classes = inferred_num_classes
+        elif is_hipoa_dataset(args.base_dir, args.dataset_name):
+            inferred_num_classes = infer_hipoa_num_classes(args.base_dir)
+            if inferred_num_classes and inferred_num_classes > 1 and int(args.num_classes) != inferred_num_classes:
+                print(
+                    f"Auto-updating num_classes from {args.num_classes} to "
+                    f"{inferred_num_classes} based on HipOA segmentation metadata"
                 )
                 args.num_classes = inferred_num_classes
         elif is_pheno_dataset(args.base_dir, args.dataset_name):
