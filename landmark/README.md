@@ -64,6 +64,21 @@ nhận folder, chương trình tìm `data.yaml`, `dataset.yaml` hoặc YAML đ�
 sau đó tạo bản runtime tại `<project>/.uknee/datasets` với `path` tuyệt đối.
 Nếu folder chưa có YAML, schema landmark 4 vùng/51 keypoint được tạo tự động.
 
+`--dataset_link` (hoặc `--dataset-link`) trỏ tới thư mục dữ liệu thật (chứa
+`images/` và `labels/`) và thay `path:` của dataset YAML, nhờ đó dùng chung một
+YAML trong repo cho nhiều máy mà không phải sửa file. YAML gốc không bị ghi đè:
+bản runtime với `path` mới nằm ở `<project>/.uknee/datasets`. Link rỗng hoặc
+không tồn tại sẽ báo lỗi, không tự quay về `path:` cũ.
+
+```bash
+python -m landmark.train \
+  --model rtmo-pose \
+  --project /scratch/phenooa/run \
+  --dataset landmark/cfg/datasets/hip_point.yaml \
+  --dataset_link /scratch/phenooa/data/HipX02 \
+  --name rtmo_hipx02
+```
+
 `yolo26-pose-v9` dùng compound scale được khai báo trực tiếp trong YAML
 (hiện tại là `l`); CLI vẫn ghi `--model yolo26-pose-v9`.
 

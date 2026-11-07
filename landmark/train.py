@@ -50,6 +50,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", required=True, help="Model YAML name/path or .pt checkpoint")
     parser.add_argument("--project", default=str(REPOSITORY_ROOT), help="Project root; outputs go to <project>/runs/<name>")
     parser.add_argument("--dataset", "--data", dest="dataset", required=True, help="Dataset folder/YAML, absolute path, or /short-name")
+    parser.add_argument(
+        "--dataset_link",
+        "--dataset-link",
+        dest="dataset_link",
+        default=None,
+        help="Dataset root holding images/ and labels/; replaces `path:` of the dataset YAML",
+    )
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--imgsz", "--imgz", "--img_size", dest="imgsz", type=parse_image_size)
     parser.add_argument("--batch", "--batch_size", dest="batch", type=int)
@@ -106,14 +113,56 @@ def resolve_model_source(value: str | Path) -> Path:
     return model_path.resolve()
 
 
-def resolve_dataset_config(value: str | Path, project_root: str | Path) -> Path:
-    """Resolve a YAML or make a portable runtime YAML for a dataset folder."""
+def _read_yaml_mapping(path: str | Path) -> dict[str, Any]:
+    values = yaml.safe_load(Path(path).expanduser().read_text(encoding="utf-8")) or {}
+    if not isinstance(values, dict):
+        raise TypeError(f"Expected a YAML mapping in {path}")
+    return values
+
+
+def resolve_dataset_link(value: str | Path | None, project_root: str | Path) -> Path | None:
+    """Resolve ``--dataset_link``; an explicit but empty/missing link is an error."""
+    if value is None:
+        return None
+    link = resolve_dataset_path(value, project_root, must_exist=True)
+    if not link.is_dir():
+        raise NotADirectoryError(f"--dataset_link must be a folder containing images/ and labels/: {link}")
+    return link
+
+
+def resolve_dataset_config(
+    value: str | Path,
+    project_root: str | Path,
+    dataset_link: str | Path | None = None,
+) -> Path:
+    """Resolve a YAML or make a portable runtime YAML for a dataset folder.
+
+    ``dataset_link`` swaps only the YAML ``path:`` so a checked-in dataset YAML
+    can train on a machine-specific data root without being edited.
+    """
     dataset_path = resolve_dataset_path(value, project_root, must_exist=True)
+    link = resolve_dataset_link(dataset_link, project_root)
     if dataset_path.is_file():
         if dataset_path.suffix.lower() not in {".yaml", ".yml"}:
             raise ValueError(f"Landmark dataset config must be YAML: {dataset_path}")
-        return dataset_path
+        if link is None:
+            return dataset_path
+        metadata = _read_yaml_mapping(dataset_path)
+        runtime_name = f"{dataset_path.stem}_{link.name}"
+        data_root = link
+    else:
+        metadata = _folder_dataset_metadata(dataset_path)
+        runtime_name = dataset_path.name if link is None else f"{dataset_path.name}_{link.name}"
+        data_root = link or dataset_path
+    metadata["path"] = str(data_root.resolve())
+    runtime_root = Path(project_root).resolve() / ".uknee" / "datasets"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    runtime_yaml = runtime_root / f"{safe_run_name(runtime_name)}_landmark.yaml"
+    runtime_yaml.write_text(yaml.safe_dump(metadata, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return runtime_yaml
 
+
+def _folder_dataset_metadata(dataset_path: Path) -> dict[str, Any]:
     preferred = [
         dataset_path / "data_points.yaml",
         dataset_path / "data_pose.yaml",
@@ -123,43 +172,33 @@ def resolve_dataset_config(value: str | Path, project_root: str | Path) -> Path:
     ]
     source_yaml = first_existing(preferred) or first_existing(sorted(dataset_path.glob("*.y*ml")))
     if source_yaml:
-        metadata = yaml.safe_load(source_yaml.read_text(encoding="utf-8")) or {}
-        if not isinstance(metadata, dict):
-            raise TypeError(f"Expected a YAML mapping in {source_yaml}")
-    else:
-        metadata = {
-            "dataset_name": dataset_path.name,
-            "train": "images/train",
-            "val": "images/val" if (dataset_path / "images" / "val").is_dir() else "images/train",
-            "test": "images/val" if (dataset_path / "images" / "val").is_dir() else "images/train",
-            "channels": 3,
-            "names": {0: "femur", 1: "tibia", 2: "fibula", 3: "patella"},
-            "kpt_shape": [51, 3],
-            "flip_idx": [],
-            "region_keypoint_counts": [45, 51, 24, 9],
-            "val_fraction": 0.15,
-            "split_seed": 2006,
-        }
-    metadata["path"] = str(dataset_path.resolve())
-    runtime_root = Path(project_root).resolve() / ".uknee" / "datasets"
-    runtime_root.mkdir(parents=True, exist_ok=True)
-    runtime_yaml = runtime_root / f"{safe_run_name(dataset_path.name)}_landmark.yaml"
-    runtime_yaml.write_text(yaml.safe_dump(metadata, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    return runtime_yaml
+        return _read_yaml_mapping(source_yaml)
+    return {
+        "dataset_name": dataset_path.name,
+        "train": "images/train",
+        "val": "images/val" if (dataset_path / "images" / "val").is_dir() else "images/train",
+        "test": "images/val" if (dataset_path / "images" / "val").is_dir() else "images/train",
+        "channels": 3,
+        "names": {0: "femur", 1: "tibia", 2: "fibula", 3: "patella"},
+        "kpt_shape": [51, 3],
+        "flip_idx": [],
+        "region_keypoint_counts": [45, 51, 24, 9],
+        "val_fraction": 0.15,
+        "split_seed": 2006,
+    }
 
 
 def _load_training_config(path: str | Path) -> dict[str, Any]:
-    values = yaml.safe_load(Path(path).expanduser().read_text(encoding="utf-8")) or {}
-    if not isinstance(values, dict):
-        raise TypeError(f"Expected a YAML mapping in {path}")
-    return values
+    return _read_yaml_mapping(path)
 
 
 def main(argv: list[str] | None = None) -> Any:
     parsed = vars(build_parser().parse_args(argv))
     project_root = resolve_project_root(parsed.pop("project"), REPOSITORY_ROOT)
     model_path = resolve_model_source(parsed.pop("model"))
-    dataset_yaml = resolve_dataset_config(parsed.pop("dataset"), project_root)
+    dataset_yaml = resolve_dataset_config(
+        parsed.pop("dataset"), project_root, parsed.pop("dataset_link")
+    )
     overrides = _parse_overrides(parsed.pop("overrides"))
     config_path = parsed.pop("config")
 

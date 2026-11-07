@@ -23,5 +23,5 @@ landmark_path_ranges:
   - [66, 75]    # greater trochanter (66–74)
   - [75, 85]    # acetabulum (75–84)
 val_fraction: 0.15
-split_seed: 2006
+split_seed: 2026
 
