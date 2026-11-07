@@ -1,0 +1,27 @@
+# Paths are resolved relative to the repository by landmark.data.prepare.
+path: Ref/HipX02
+dataset_name: hipx
+train: images/train
+val: images/train
+test: images/train
+
+channels: 3
+names:
+  0: femur
+  1: lesser_trochanter
+  2: greater_trochanter
+  3: acetabulum
+
+kpt_shape: [59, 3]
+flip_idx: []
+
+# Uknee extension used by target adapters, medical metrics and split checks.
+region_keypoint_counts: [59, 7, 9, 10]
+landmark_path_ranges:
+  - [0, 59]     # femur outline (BoneFinder 0–58)
+  - [59, 66]    # lesser trochanter (59–65)
+  - [66, 75]    # greater trochanter (66–74)
+  - [75, 85]    # acetabulum (75–84)
+val_fraction: 0.15
+split_seed: 2006
+
