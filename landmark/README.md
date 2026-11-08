@@ -79,6 +79,39 @@ python -m landmark.train \
   --name rtmo_hipx02
 ```
 
+### Hai nhánh cấu hình: knee và hip
+
+Dataset YAML quyết định schema (tên vùng, số keypoint mỗi vùng, các path), và
+model YAML phải thuộc cùng nhánh. Ghép sai nhánh sẽ báo lỗi ngay khi dựng model.
+
+| Nhánh | Dataset YAML | Schema | Model YAML |
+|---|---|---|---|
+| Knee (mặc định) | `cfg/datasets/mesko4gf2.yaml` | femur/tibia/fibula/patella, `45/51/24/9` → 129 điểm, 51 slot | `rtmo-pose`, `yolo26-pose-v9`, `yolo26-pose-v1`, `hrnet-*`, `vitpose-*` |
+| Hip | `cfg/datasets/hip_point.yaml` | femur/lesser_trochanter/greater_trochanter/acetabulum, `59/7/9/10` → 85 điểm, 59 slot | `rtmo-pose-hip`, `yolo26-pose-hip` |
+
+`landmark.train` đọc `--dataset` và kích hoạt schema qua biến môi trường
+`UKNEE_LANDMARK_SCHEMA` trước khi import model (DDP worker kế thừa biến này).
+Khi gọi API trực tiếp (không qua `landmark.train`), đặt biến này thành đường
+dẫn dataset YAML trước khi `import landmark`. Cần thêm model hip khác (HRNet,
+ViTPose) thì copy YAML knee tương ứng và đổi `num_landmarks: 85`,
+`kpt_shape: [59, 3]`.
+
+Label hip: mỗi dòng có `5 + 59 * 3 = 182` giá trị, mỗi ảnh đủ 4 dòng class
+0..3, và `count` keypoint đầu của vùng phải có visibility > 0 (slot còn lại
+bằng 0). Ảnh kết quả (`samples/landmark_sample_e*.png`, dashboard, metrics)
+ghi tiến độ dạng `Epoch 5/20`.
+
+```bash
+python -m landmark.train \
+  --model rtmo-pose-hip \
+  --project /scratch/phenooa/run/hiplandmark \
+  --dataset landmark/cfg/datasets/hip_point.yaml \
+  --dataset_link /scratch/phenooa/data/HipX02 \
+  --imgsz 736x448 --batch 4 --epochs 200 --base_lr 0.001 \
+  --gpu '[0]' --seed 2026 --aug_strategy xray \
+  --name rtmo_hipx02 --no-auto-export-onnx
+```
+
 `yolo26-pose-v9` dùng compound scale được khai báo trực tiếp trong YAML
 (hiện tại là `l`); CLI vẫn ghi `--model yolo26-pose-v9`.
 

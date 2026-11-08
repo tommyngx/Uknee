@@ -107,7 +107,7 @@ class OA26PerRegionRefinementHead(nn.Module):
         image_size: tuple[torch.Tensor, torch.Tensor],
         p4_stride: float,
     ) -> dict[str, torch.Tensor]:
-        """Return one independent refined 51-slot pose for every selected class instance."""
+        """Return one independent refined per-region pose (MAX_REGION_KEYPOINTS slots) for every selected class instance."""
         debug_event("refiner-forward-enter", p4_shape=tuple(p4_feature.shape), instances=instance_boxes.shape[0])
         valid_mask = class_keypoint_mask(class_ids, self.num_keypoints)
         # torchvision ROIAlign differentiates feature values, not ROI coordinates. Keep predicted boxes outside the

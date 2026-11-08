@@ -1476,6 +1476,8 @@ from landmark.core.targets import (
     gaussian_heatmap_targets,
 )
 from landmark.core.targets import gaussian_simcc_targets
+from landmark.data.schema import LANDMARK_PATH_RANGES as _SCHEMA_PATH_RANGES
+from landmark.data.schema import NUM_LANDMARKS as _SCHEMA_NUM_LANDMARKS
 
 
 class OA26HeatmapPoseLoss(PoseLoss26):
@@ -1516,7 +1518,7 @@ class OA26HeatmapPoseLoss(PoseLoss26):
         heatmaps = preds["heatmaps"]
         batch_size, num_keypoints, heatmap_h, heatmap_w = heatmaps.shape
         image_size = torch.tensor(preds["feats"][0].shape[2:], device=self.device, dtype=heatmaps.dtype) * self.stride[0]
-        if num_keypoints == 129:
+        if num_keypoints == _SCHEMA_NUM_LANDMARKS:
             gt_xy, valid = extract_canonical_image_keypoints(
                 batch, batch_size, image_size, self.device, heatmaps.dtype
             )
@@ -1560,8 +1562,8 @@ class OA26HeatmapPoseLoss(PoseLoss26):
     @staticmethod
     def _path_indices(num_keypoints: int, device: torch.device):
         """Return adjacency indices without joining independent tibial paths."""
-        ranges = ((0, 45), (45, 86), (86, 91), (91, 96), (96, 120), (120, 129))
-        if num_keypoints != 129:
+        ranges = _SCHEMA_PATH_RANGES
+        if num_keypoints != _SCHEMA_NUM_LANDMARKS:
             ranges = ((0, num_keypoints),)
         edges = [(index, index + 1) for start, stop in ranges for index in range(start, stop - 1)]
         curves = [
@@ -1691,7 +1693,7 @@ class OA26RegionRefinePoseLoss(OA26HeatmapPoseLoss):
         region_batch = preds["region_batch_indices"].long()
         rows = region_batch * NUM_REGIONS + region_ids
 
-        # MESKO stores four object rows per image. Each row has 51 local slots and is matched by class ID.
+        # Each image stores one object row per region. Rows hold MAX_REGION_KEYPOINTS local slots and are matched by class ID.
         region_gt = probability.new_zeros((batch_size * NUM_REGIONS, num_keypoints, 3))
         region_present = torch.zeros(batch_size * NUM_REGIONS, device=self.device, dtype=torch.bool)
         gt_batch = batch["batch_idx"].long().view(-1)

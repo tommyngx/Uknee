@@ -37,6 +37,66 @@ if _gpu_bootstrap_args.gpu is not None:
         "" if _gpu_bootstrap_args.gpu == [-1] else ",".join(map(str, _gpu_bootstrap_args.gpu))
     )
 
+# The landmark schema (region names, keypoint counts, paths) is fixed when
+# ``landmark.data.schema`` is first imported, so the dataset YAML must select it
+# before the model/trainer modules below load. DDP workers inherit the variable.
+SCHEMA_ENV = "UKNEE_LANDMARK_SCHEMA"  # keep equal to landmark.data.schema.SCHEMA_ENV
+
+
+def _read_yaml_mapping(path: str | Path) -> dict[str, Any]:
+    values = yaml.safe_load(Path(path).expanduser().read_text(encoding="utf-8")) or {}
+    if not isinstance(values, dict):
+        raise TypeError(f"Expected a YAML mapping in {path}")
+    return values
+
+
+def find_dataset_yaml(dataset_path: Path) -> Path | None:
+    """Return a dataset YAML file itself, or the YAML describing a dataset folder."""
+    if dataset_path.is_file():
+        return dataset_path
+    preferred = [
+        dataset_path / "data_points.yaml",
+        dataset_path / "data_pose.yaml",
+        dataset_path / "data.yaml",
+        dataset_path / "dataset.yaml",
+        dataset_path / f"{dataset_path.name}.yaml",
+    ]
+    return first_existing(preferred) or first_existing(sorted(dataset_path.glob("*.y*ml")))
+
+
+def activate_dataset_schema(argv: list[str] | None = None) -> None:
+    """Export the dataset YAML as the landmark schema when it declares one."""
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--dataset", "--data", dest="dataset", default=None)
+    parser.add_argument("--project", default=None)
+    args, _ = parser.parse_known_args(argv)
+    if not args.dataset:
+        return
+    try:
+        project_root = resolve_project_root(args.project, REPOSITORY_ROOT)
+        source = find_dataset_yaml(resolve_dataset_path(args.dataset, project_root, must_exist=True))
+        metadata = _read_yaml_mapping(source) if source else {}
+    except (OSError, ValueError, TypeError, yaml.YAMLError):
+        return  # main() reports the underlying dataset error with full context
+    if "region_keypoint_counts" not in metadata:
+        return
+    # The variable must be set before landmark.data.schema is imported for the
+    # first time; it is removed again when the YAML just describes the knee, so
+    # knee runs (and their DDP workers) behave exactly as without the switch.
+    os.environ[SCHEMA_ENV] = str(Path(source).resolve())
+    try:
+        from landmark.data import schema as schema_module
+
+        declared = schema_module.schema_from_metadata(metadata)
+    except (ValueError, TypeError, KeyError) as exc:
+        os.environ.pop(SCHEMA_ENV, None)
+        raise ValueError(f"Dataset YAML {source} declares an invalid landmark schema: {exc}") from exc
+    if declared is None or declared == schema_module.KNEE_SCHEMA:
+        os.environ.pop(SCHEMA_ENV, None)
+
+
+activate_dataset_schema()
+
 from landmark.utils.api import KneePose
 
 
@@ -113,13 +173,6 @@ def resolve_model_source(value: str | Path) -> Path:
     return model_path.resolve()
 
 
-def _read_yaml_mapping(path: str | Path) -> dict[str, Any]:
-    values = yaml.safe_load(Path(path).expanduser().read_text(encoding="utf-8")) or {}
-    if not isinstance(values, dict):
-        raise TypeError(f"Expected a YAML mapping in {path}")
-    return values
-
-
 def resolve_dataset_link(value: str | Path | None, project_root: str | Path) -> Path | None:
     """Resolve ``--dataset_link``; an explicit but empty/missing link is an error."""
     if value is None:
@@ -163,14 +216,7 @@ def resolve_dataset_config(
 
 
 def _folder_dataset_metadata(dataset_path: Path) -> dict[str, Any]:
-    preferred = [
-        dataset_path / "data_points.yaml",
-        dataset_path / "data_pose.yaml",
-        dataset_path / "data.yaml",
-        dataset_path / "dataset.yaml",
-        dataset_path / f"{dataset_path.name}.yaml",
-    ]
-    source_yaml = first_existing(preferred) or first_existing(sorted(dataset_path.glob("*.y*ml")))
+    source_yaml = find_dataset_yaml(dataset_path)
     if source_yaml:
         return _read_yaml_mapping(source_yaml)
     return {

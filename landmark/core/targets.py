@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import torch
 
+from landmark.data.schema import REGION_KEYPOINT_COUNTS, REGION_OFFSETS
 
 # Uknee modification, 2026-08-10: MESKO stores four class-local object rows,
 # while the OA26 auxiliary branch predicts one canonical image-level heatmap.
-REGION_COUNTS = (45, 51, 24, 9)
-REGION_OFFSETS = (0, 45, 96, 120)
+# The counts/offsets come from the active landmark schema (knee by default).
+REGION_COUNTS = REGION_KEYPOINT_COUNTS
 
 
 def extract_image_keypoints(
@@ -52,7 +53,7 @@ def extract_canonical_image_keypoints(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Map four MESKO class rows to one ordered 129-point target per image."""
+    """Map the four class rows to one ordered canonical target per image."""
     gt_xy = torch.zeros(batch_size, sum(REGION_COUNTS), 2, device=device, dtype=dtype)
     valid = torch.zeros(batch_size, sum(REGION_COUNTS), device=device, dtype=torch.bool)
     keypoints, batch_idx, classes = (

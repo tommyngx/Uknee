@@ -10,6 +10,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from landmark.data.schema import MAX_REGION_KEYPOINTS, REGION_NAMES
+
 
 def check_class_names(names: list | dict) -> dict[int, str]:
     if isinstance(names, list):
@@ -21,7 +23,7 @@ def check_class_names(names: list | dict) -> dict[int, str]:
 
 
 def default_class_names(_data: str | Path | None = None) -> dict[int, str]:
-    return {0: "femur", 1: "tibia", 2: "fibula", 3: "patella"}
+    return dict(enumerate(REGION_NAMES))
 
 
 class AutoBackend(nn.Module):
@@ -49,7 +51,7 @@ class AutoBackend(nn.Module):
         self.channels = 3
         self.imgsz = None
         self.end2end = False
-        self.kpt_shape = [51, 3]
+        self.kpt_shape = [MAX_REGION_KEYPOINTS, 3]
 
         if isinstance(model, nn.Module):
             self.format = "pt"

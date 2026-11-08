@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from landmark.nn.modules.conv import Conv
 from landmark.nn.modules.head import Pose26
 from landmark.core.targets import decode_simcc_logits
+from landmark.data.schema import NUM_LANDMARKS, REGION_NAMES
 
 
 class OA26HeatmapPose(Pose26):
@@ -38,6 +39,12 @@ class OA26HeatmapPose(Pose26):
         """
         super().__init__(nc, kpt_shape, reg_max, end2end, ch)
         self.heatmap_channels = int(heatmap_channels or kpt_shape[0])
+        if self.heatmap_channels not in {int(kpt_shape[0]), NUM_LANDMARKS}:
+            raise ValueError(
+                f"OA26HeatmapPose heatmap_channels={self.heatmap_channels} must be the per-object "
+                f"keypoint count {int(kpt_shape[0])} or the canonical landmark count {NUM_LANDMARKS} "
+                f"of the active schema {REGION_NAMES}"
+            )
         self.heatmap_temperature = float(heatmap_temperature)
 
         c = max(ch[0] // 2, self.heatmap_channels)

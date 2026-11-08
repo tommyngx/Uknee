@@ -1,4 +1,4 @@
-"""Validate MESKO YOLO-Pose data and create leakage-safe split manifests."""
+"""Validate YOLO-Pose landmark data and create leakage-safe split manifests."""
 
 from __future__ import annotations
 
@@ -12,11 +12,23 @@ from typing import Iterable
 import torch
 import yaml
 
-from .schema import REGION_KEYPOINT_COUNTS, REGION_NAMES, validate_region_schema
+from .schema import (
+    LANDMARK_PATH_RANGES,
+    MAX_REGION_KEYPOINTS,
+    NUM_REGIONS,
+    REGION_KEYPOINT_COUNTS,
+    REGION_NAMES,
+    SCHEMA_ENV,
+    validate_region_schema,
+)
 
 
 IMAGE_SUFFIXES = {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_SCHEMA_HINT = (
+    f"The active landmark schema is fixed when the package is imported. Launch with "
+    f"`python -m landmark.train --dataset <yaml>` or set {SCHEMA_ENV}=<dataset yaml> first."
+)
 
 
 def _atomic_text(path: Path, value: str) -> None:
@@ -105,18 +117,18 @@ def _validate_label(path: Path) -> None:
         values = line.split()
         if not values:
             continue
-        if len(values) != 5 + 51 * 3:
+        if len(values) != 5 + MAX_REGION_KEYPOINTS * 3:
             raise ValueError(
-                f"{path}:{line_number} must contain class, box and 51x3 keypoints; "
-                f"got {len(values)} values"
+                f"{path}:{line_number} must contain class, box and "
+                f"{MAX_REGION_KEYPOINTS}x3 keypoints; got {len(values)} values"
             )
         class_id = int(float(values[0]))
-        if class_id not in range(4):
+        if class_id not in range(NUM_REGIONS):
             raise ValueError(f"Unsupported class {class_id} at {path}:{line_number}")
         if class_id in rows:
             raise ValueError(f"Duplicate class {class_id} at {path}:{line_number}")
         rows[class_id] = values
-        keypoints = torch.tensor([float(value) for value in values[5:]]).view(51, 3)
+        keypoints = torch.tensor([float(value) for value in values[5:]]).view(MAX_REGION_KEYPOINTS, 3)
         visible = keypoints[:, 2] > 0
         required = REGION_KEYPOINT_COUNTS[class_id]
         if int(visible.sum()) != required or not visible[:required].all() or visible[required:].any():
@@ -126,8 +138,8 @@ def _validate_label(path: Path) -> None:
             )
         if not torch.isfinite(keypoints).all():
             raise ValueError(f"Non-finite keypoints at {path}:{line_number}")
-    if tuple(sorted(rows)) != (0, 1, 2, 3):
-        raise ValueError(f"{path} must contain exactly one row for each class 0..3")
+    if tuple(sorted(rows)) != tuple(range(NUM_REGIONS)):
+        raise ValueError(f"{path} must contain exactly one row for each class 0..{NUM_REGIONS - 1}")
 
 
 def prepare_dataset(
@@ -140,13 +152,21 @@ def prepare_dataset(
     metadata = yaml.safe_load(source_yaml.read_text(encoding="utf-8")) or {}
     if not isinstance(metadata, dict):
         raise TypeError(f"Dataset YAML must contain a mapping: {source_yaml}")
-    validate_region_schema(len(metadata.get("names", {})), metadata.get("kpt_shape", ()))
-    names = tuple(metadata["names"][index] for index in range(4))
+    try:
+        validate_region_schema(len(metadata.get("names", {})), metadata.get("kpt_shape", ()))
+    except ValueError as exc:
+        raise ValueError(f"{exc}. {_SCHEMA_HINT}") from exc
+    names = tuple(metadata["names"][index] for index in range(NUM_REGIONS))
     if names != REGION_NAMES:
-        raise ValueError(f"Expected class order {REGION_NAMES}, got {names}")
+        raise ValueError(f"Expected class order {REGION_NAMES}, got {names}. {_SCHEMA_HINT}")
     counts = tuple(metadata.get("region_keypoint_counts", REGION_KEYPOINT_COUNTS))
     if counts != REGION_KEYPOINT_COUNTS:
-        raise ValueError(f"Expected region_keypoint_counts={REGION_KEYPOINT_COUNTS}, got {counts}")
+        raise ValueError(
+            f"Expected region_keypoint_counts={REGION_KEYPOINT_COUNTS}, got {counts}. {_SCHEMA_HINT}"
+        )
+    paths = tuple(map(tuple, metadata.get("landmark_path_ranges", LANDMARK_PATH_RANGES)))
+    if paths != LANDMARK_PATH_RANGES:
+        raise ValueError(f"Expected landmark_path_ranges={LANDMARK_PATH_RANGES}, got {paths}. {_SCHEMA_HINT}")
 
     root = _resolve_root(source_yaml, metadata.get("path", source_yaml.parent))
     train_images = _resolve_images(root, metadata.get("train", "images/train"))

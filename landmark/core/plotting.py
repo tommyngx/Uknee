@@ -1170,10 +1170,22 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from landmark.data.schema import LANDMARK_PATH_RANGES, REGION_NAMES
+from landmark.data.schema import LANDMARK_PATH_RANGES, REGION_KEYPOINT_COUNTS, REGION_NAMES, REGION_OFFSETS
 
 
 COLORS = ("#00b4ff", "#ea580c", "#ff78dc", "#16a34a")
+
+
+def _region_title(name: str) -> str:
+    return name.replace("_", " ").title()
+
+
+def _region_of_landmark(index: int) -> int:
+    """Return the anatomical region that owns a canonical landmark index."""
+    for region, (offset, count) in enumerate(zip(REGION_OFFSETS, REGION_KEYPOINT_COUNTS)):
+        if offset <= index < offset + count:
+            return region
+    return len(REGION_NAMES) - 1
 
 
 def _style(ax) -> None:
@@ -1196,14 +1208,25 @@ def _read_csv(path: Path) -> dict[str, np.ndarray]:
     }
 
 
+def _epoch_label(epochs_completed: int | float | None, epochs_total: int | None) -> str:
+    """Return ``Epoch 5/20`` (or ``Epoch 5`` when the total is unknown)."""
+    completed = int(epochs_completed or 0)
+    if epochs_total:
+        return f"Epoch {completed}/{int(epochs_total)}"
+    return f"Epoch {completed}"
+
+
 def _training_report_title(
     report_name: str,
     model_name: str | None,
     elapsed_seconds: float | None,
     epochs_completed: int | None,
+    epochs_total: int | None = None,
 ) -> str:
-    """Build one stable report title including total train time and time/epoch."""
+    """Build one stable report title including progress, total train time and time/epoch."""
     title = f"{report_name}: {model_name or 'landmark-model'}"
+    if epochs_completed:
+        title = f"{title} | {_epoch_label(epochs_completed, epochs_total)}"
     if elapsed_seconds is None or elapsed_seconds <= 0:
         return title
     elapsed = float(elapsed_seconds)
@@ -1233,6 +1256,7 @@ def plot_dashboard_pose(
     pixel_spacing: float = 0.10,
     model_name: str | None = None,
     elapsed_seconds: float | None = None,
+    epochs_total: int | None = None,
 ) -> Path | None:
     csv_path = Path(csv_file)
     if not csv_path.exists():
@@ -1261,7 +1285,7 @@ def plot_dashboard_pose(
 
     # Title formatting
     m_name = model_name or csv_path.parent.name or "yolo26-pose-v1"
-    title = _training_report_title("Landmark Dashboard", m_name, elapsed_seconds, len(epochs))
+    title = _training_report_title("Landmark Dashboard", m_name, elapsed_seconds, len(epochs), epochs_total)
     fig.suptitle(title, color="#1e293b", fontsize=14, fontweight="bold", y=0.985)
 
     # Subplot 1: Train & Val Loss + Top 1, 2, 3 Val Loss Markers
@@ -1352,10 +1376,10 @@ def plot_dashboard_pose(
     # Subplot 3: Per-Region MRE
     ax3 = axes[1, 0]
     _style(ax3)
-    region_cols = [("metrics/MRE_femur", "Femur", c_blue),
-                   ("metrics/MRE_tibia", "Tibia", c_red),
-                   ("metrics/MRE_fibula", "Fibula", c_green),
-                   ("metrics/MRE_patella", "Patella", c_purple)]
+    region_cols = [
+        (f"metrics/MRE_{name}", _region_title(name), color)
+        for name, color in zip(REGION_NAMES, (c_blue, c_red, c_green, c_purple))
+    ]
     region_mre_series = []
     for col, name, color in region_cols:
         if col in values:
@@ -1368,7 +1392,8 @@ def plot_dashboard_pose(
         ax3.plot(epochs[best_mre_idx], mre_mm[best_mre_idx], marker="*", markersize=12, color="#facc15",
                  markeredgecolor="#b45309", markeredgewidth=1.2, label=f"Best MRE Epoch (E{best_mre_ep})", zorder=5)
 
-    ax3.set_title("Per-Region MRE (Femur, Tibia, Fibula, Patella in mm)", fontsize=12, fontweight="bold", color="#1e293b")
+    region_list = ", ".join(_region_title(name) for name in REGION_NAMES)
+    ax3.set_title(f"Per-Region MRE ({region_list} in mm)", fontsize=12, fontweight="bold", color="#1e293b")
     ax3.set_xlabel("Epochs", fontsize=10, color="black")
     ax3.set_ylabel("Error (mm)", fontsize=10, color="black", fontweight="semibold")
     apply_robust_y_limit(ax3, region_mre_series, epochs=epochs, lower_bound=-0.05)
@@ -1457,12 +1482,13 @@ def plot_pose_metrics(
     model_name: str | None = None,
     elapsed_seconds: float | None = None,
     epochs_completed: int | None = None,
+    epochs_total: int | None = None,
 ) -> Path:
     """Write normalized confusion, pose/box PR, and F1-confidence in one figure."""
     destination = Path(output_png)
     fig, axes = plt.subplots(2, 2, figsize=(12, 10), dpi=150)
     fig.suptitle(
-        _training_report_title("Landmark Metrics", model_name, elapsed_seconds, epochs_completed),
+        _training_report_title("Landmark Metrics", model_name, elapsed_seconds, epochs_completed, epochs_total),
         color="#1e293b",
         fontsize=14,
         fontweight="bold",
@@ -1541,7 +1567,12 @@ def plot_pose_metrics(
     return destination
 
 
-def plot_validation_samples(records: list[dict[str, Any]], output_png: str | Path, epoch: int | float = 150) -> Path | None:
+def plot_validation_samples(
+    records: list[dict[str, Any]],
+    output_png: str | Path,
+    epoch: int | float = 150,
+    epochs_total: int | None = None,
+) -> Path | None:
     """Render four validation images in a 2x2 grid (2 top, 2 bottom) preserving aspect ratio."""
     if not records:
         return None
@@ -1555,7 +1586,7 @@ def plot_validation_samples(records: list[dict[str, Any]], output_png: str | Pat
         ax.imshow(image, cmap="gray" if image.ndim == 2 else None, aspect="equal")
         pred, valid = record["pred"], record["valid"]
         offset = 0
-        for color, name, count in zip(COLORS, REGION_NAMES, (45, 51, 24, 9)):
+        for color, name, count in zip(COLORS, REGION_NAMES, REGION_KEYPOINT_COUNTS):
             local = pred[offset : offset + count]
             local_valid = valid[offset : offset + count] & np.isfinite(local).all(axis=1)
             # Solid neon green points without outer black border
@@ -1565,7 +1596,7 @@ def plot_validation_samples(records: list[dict[str, Any]], output_png: str | Pat
             path = pred[start:stop]
             mask = valid[start:stop] & np.isfinite(path).all(axis=1)
             if mask.sum() >= 2:
-                path_color = COLORS[0] if stop <= 45 else (COLORS[1] if stop <= 96 else (COLORS[2] if stop <= 120 else COLORS[3]))
+                path_color = COLORS[_region_of_landmark(start)]
                 # Clean colored region path line without black stroke outline underneath
                 ax.plot(path[mask, 0], path[mask, 1], color=path_color, linewidth=1.1, zorder=4)
         banner = (
@@ -1581,14 +1612,16 @@ def plot_validation_samples(records: list[dict[str, Any]], output_png: str | Pat
 
     from matplotlib.lines import Line2D
     legend_handles = [
-        Line2D([0], [0], color=COLORS[0], lw=2.0, label="Femur Path"),
-        Line2D([0], [0], color=COLORS[1], lw=2.0, label="Tibia Path"),
-        Line2D([0], [0], color=COLORS[2], lw=2.0, label="Fibula Path"),
-        Line2D([0], [0], color=COLORS[3], lw=2.0, label="Patella Path"),
+        Line2D([0], [0], color=COLORS[index], lw=2.0, label=f"{_region_title(name)} Path")
+        for index, name in enumerate(REGION_NAMES)
+    ] + [
         Line2D([0], [0], color=neon_green, marker="o", markersize=6, linestyle="None", label="Keypoints"),
     ]
     fig.legend(handles=legend_handles, loc="lower center", ncol=5, fontsize=9.5, frameon=True, facecolor="white", edgecolor="#94a3b8")
-    fig.suptitle(f"Validation Landmark Predictions — Epoch {int(epoch)}", fontsize=13.5, fontweight="bold", color="#1e293b", ha="center", y=0.955)
+    fig.suptitle(
+        f"Validation Landmark Predictions — {_epoch_label(epoch, epochs_total)}",
+        fontsize=13.5, fontweight="bold", color="#1e293b", ha="center", y=0.955,
+    )
     fig.tight_layout(rect=(0, 0.055, 1, 0.945))
     destination.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(destination, bbox_inches="tight")

@@ -13,7 +13,7 @@ import torch
 import yaml
 from PIL import Image
 
-from landmark.core.plotting import _training_report_title, plot_pose_metrics, plot_validation_samples
+from landmark.core.plotting import _epoch_label, _training_report_title, plot_pose_metrics, plot_validation_samples
 from landmark.utils.validation import FlatPoseTrainerMixin, RESULT_COLUMNS
 
 
@@ -123,7 +123,9 @@ class ReportingTests(unittest.TestCase):
                 }
                 for index in range(4)
             ]
-            output = plot_validation_samples(records, root / "samples" / "landmark_sample_e1.png")
+            output = plot_validation_samples(
+                records, root / "samples" / "landmark_sample_e1.png", epoch=1, epochs_total=20
+            )
             self.assertIsNotNone(output)
             self.assertTrue(output.is_file())
             with Image.open(output) as image:
@@ -133,8 +135,18 @@ class ReportingTests(unittest.TestCase):
         title = _training_report_title("Landmark Dashboard", "pose-v9", 125.0, 5)
         self.assertEqual(
             title,
-            "Landmark Dashboard: pose-v9 | Train Time: 2m 5s | Time/Epoch: 25.0s",
+            "Landmark Dashboard: pose-v9 | Epoch 5 | Train Time: 2m 5s | Time/Epoch: 25.0s",
         )
+
+    def test_report_title_shows_epoch_progress_out_of_total(self):
+        title = _training_report_title("Landmark Dashboard", "pose-v9", 125.0, 5, epochs_total=20)
+        self.assertEqual(
+            title,
+            "Landmark Dashboard: pose-v9 | Epoch 5/20 | Train Time: 2m 5s | Time/Epoch: 25.0s",
+        )
+        self.assertEqual(_training_report_title("Landmark Metrics", "m", None, None), "Landmark Metrics: m")
+        self.assertEqual(_epoch_label(5, 20), "Epoch 5/20")
+        self.assertEqual(_epoch_label(5, None), "Epoch 5")
 
     def test_onnx_is_refreshed_immediately_when_best_checkpoint_changes(self):
         with tempfile.TemporaryDirectory() as directory:

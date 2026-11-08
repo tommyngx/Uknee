@@ -20,7 +20,13 @@ from landmark.core import DEFAULT_CFG_DICT, LOGGER, RANK, ops
 from landmark.core.targets import extract_canonical_image_keypoints, gaussian_heatmap_targets
 from landmark.core.torch_utils import model_info
 
-from landmark.data.schema import NUM_LANDMARKS, REGION_KEYPOINT_COUNTS, REGION_NAMES
+from landmark.data.schema import (
+    MAX_REGION_KEYPOINTS,
+    NUM_LANDMARKS,
+    NUM_REGIONS,
+    REGION_KEYPOINT_COUNTS,
+    REGION_NAMES,
+)
 from landmark.models import (
     HRNetW32,
     HRNetW48,
@@ -88,7 +94,7 @@ def canonical_to_objects(canonical: torch.Tensor, image_hw: tuple[int, int]) -> 
         boxes, scores, classes, keypoints = [], [], [], []
         offset = 0
         for class_id, count in enumerate(REGION_KEYPOINT_COUNTS):
-            local = sample.new_zeros((51, 3))
+            local = sample.new_zeros((MAX_REGION_KEYPOINTS, 3))
             local[:count] = sample[offset : offset + count]
             local[:count, 0] *= width
             local[:count, 1] *= height
@@ -110,6 +116,27 @@ def canonical_to_objects(canonical: torch.Tensor, image_hw: tuple[int, int]) -> 
     return output
 
 
+def _check_model_yaml_schema(config: dict[str, Any], yaml_file: str) -> None:
+    """Refuse a model YAML written for another anatomy than the active landmark schema."""
+    mismatches = []
+    declared = config.get("num_landmarks")
+    if declared is not None and int(declared) != NUM_LANDMARKS:
+        mismatches.append(f"num_landmarks={declared} (schema: {NUM_LANDMARKS})")
+    kpt_shape = config.get("kpt_shape")
+    if kpt_shape is not None and list(map(int, kpt_shape)) != [MAX_REGION_KEYPOINTS, 3]:
+        mismatches.append(f"kpt_shape={list(kpt_shape)} (schema: [{MAX_REGION_KEYPOINTS}, 3])")
+    nc = config.get("nc")
+    if nc is not None and int(nc) != NUM_REGIONS:
+        mismatches.append(f"nc={nc} (schema: {NUM_REGIONS})")
+    if mismatches:
+        raise ValueError(
+            f"{yaml_file} does not match the active landmark schema {REGION_NAMES}: "
+            + "; ".join(mismatches)
+            + ". Knee models use rtmo-pose/hrnet-*/vitpose-* with the knee dataset; the hip dataset "
+            "(hip_point.yaml) needs a hip model YAML such as rtmo-pose-hip."
+        )
+
+
 class HeatmapPoseModel(nn.Module):
     """Full-frame heatmap model satisfying the vendored trainer contract."""
 
@@ -118,12 +145,11 @@ class HeatmapPoseModel(nn.Module):
         self.yaml = _read_config(config)
         self.yaml_file = self.yaml.get("yaml_file", "heatmap-pose.yaml")
         self.architecture = str(self.yaml["architecture"])
+        _check_model_yaml_schema(self.yaml, self.yaml_file)
         common = {
             "input_channels": int(self.yaml.get("input_channels", 3)),
-            "num_landmarks": int(self.yaml.get("num_landmarks", NUM_LANDMARKS)),
+            "num_landmarks": NUM_LANDMARKS,
         }
-        if common["num_landmarks"] != NUM_LANDMARKS:
-            raise ValueError(f"Canonical models require {NUM_LANDMARKS} landmarks")
         if self.architecture == "hrnet_w32":
             self.network = HRNetW32(**common)
         elif self.architecture == "hrnet_w48":
@@ -170,9 +196,9 @@ class HeatmapPoseModel(nn.Module):
             )
         else:
             raise ValueError(f"Unsupported canonical architecture: {self.architecture}")
-        self.nc = 4
+        self.nc = NUM_REGIONS
         self.names = dict(enumerate(REGION_NAMES))
-        self.kpt_shape = [51, 3]
+        self.kpt_shape = [MAX_REGION_KEYPOINTS, 3]
         self.stride = torch.tensor([32.0])
         self.task = "pose"
         self.args = {**DEFAULT_CFG_DICT, "task": "pose", "model": self.yaml_file}
@@ -503,8 +529,9 @@ class HeatmapPoseTrainer(FlatPoseTrainerMixin, DetectionTrainer):
 
     def get_dataset(self):
         data = super().get_dataset()
-        if data.get("kpt_shape") != [51, 3]:
-            raise ValueError("Heatmap baselines require kpt_shape=[51, 3]")
+        expected = [MAX_REGION_KEYPOINTS, 3]
+        if list(data.get("kpt_shape") or ()) != expected:
+            raise ValueError(f"Heatmap baselines require kpt_shape={expected} for schema {REGION_NAMES}")
         return data
 
     def get_validator(self):

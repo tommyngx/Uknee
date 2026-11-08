@@ -12,6 +12,13 @@ import numpy as np
 import torch
 
 from landmark.core.export_utils import best_onnx_opset, trace_torchscript
+from landmark.data.schema import (
+    MAX_REGION_KEYPOINTS,
+    NUM_LANDMARKS,
+    NUM_REGIONS,
+    REGION_KEYPOINT_COUNTS,
+    REGION_NAMES,
+)
 
 
 def portable_model_stem(value: str) -> str:
@@ -41,12 +48,15 @@ def pose_onnx_metadata(model: torch.nn.Module, args: dict[str, Any], height: int
             "coordinate_space": "letterboxed_input_pixels",
         }
     else:
+        # One row per region: xyxy, score, class, then the padded per-region keypoints.
         output_contract = {
-            "detections": ["batch", 4, 159],
+            "detections": ["batch", NUM_REGIONS, 6 + MAX_REGION_KEYPOINTS * 3],
             "num_detections": ["batch"],
-            "canonical": ["batch", 129, 3],
+            "canonical": ["batch", NUM_LANDMARKS, 3],
             "keypoint_format": "x_y_confidence",
             "coordinate_space": "letterboxed_input_pixels",
+            "region_names": list(REGION_NAMES),
+            "region_keypoint_counts": list(REGION_KEYPOINT_COUNTS),
         }
     return {
         "uknee.schema_version": "1",

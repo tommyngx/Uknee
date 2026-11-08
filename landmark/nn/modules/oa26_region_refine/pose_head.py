@@ -8,7 +8,9 @@ import torch
 from landmark.nn.modules.oa26.pose_heads import OA26HeatmapPose
 from landmark.data.schema import (
     MAX_REGION_KEYPOINTS,
+    NUM_LANDMARKS,
     NUM_REGIONS,
+    REGION_NAMES,
     validate_region_schema,
 )
 from landmark.core.debug import debug_event
@@ -30,12 +32,25 @@ class OA26RegionRefinePose(OA26HeatmapPose):
         ch: tuple = (),
     ):
         """Initialize the unchanged v1 head and the v9-only region branch."""
-        validate_region_schema(nc, kpt_shape)
+        try:
+            validate_region_schema(nc, kpt_shape)
+        except ValueError as exc:
+            raise ValueError(
+                f"{exc}. Use yolo26-pose-v9 for the knee dataset and yolo26-pose-hip for hip_point.yaml."
+            ) from exc
         cfg = region_config or {}
+        heatmap_channels = int(cfg.get("auxiliary_heatmap_channels", 0))
+        if heatmap_channels and heatmap_channels not in {int(kpt_shape[0]), NUM_LANDMARKS}:
+            raise ValueError(
+                f"oa26_region_refine.auxiliary_heatmap_channels={heatmap_channels} matches neither the "
+                f"per-object slot count {int(kpt_shape[0])} nor the {NUM_LANDMARKS} canonical landmarks of "
+                f"the active schema {REGION_NAMES}. Use yolo26-pose-v9 for the knee dataset and "
+                "yolo26-pose-hip for hip_point.yaml."
+            )
         super().__init__(
             nc,
             kpt_shape,
-            int(cfg.get("auxiliary_heatmap_channels", 0)),
+            heatmap_channels,
             float(cfg.get("coarse_heatmap_temperature", 1.0)),
             reg_max,
             end2end,
@@ -45,7 +60,7 @@ class OA26RegionRefinePose(OA26HeatmapPose):
         if str(cfg.get("feature_level", "P4")).upper() != "P4":
             raise ValueError("OA26 region refinement currently supports feature_level=P4 only")
         if int(cfg.get("num_regions", NUM_REGIONS)) != NUM_REGIONS:
-            raise ValueError(f"MESKO4GF2 defines exactly {NUM_REGIONS} region classes")
+            raise ValueError(f"The landmark schema defines exactly {NUM_REGIONS} region classes")
         if len(ch) < 3:
             raise ValueError("OA26RegionRefinePose requires P2, P3, and P4 feature levels")
         self.region_refine_head = OA26PerRegionRefinementHead(

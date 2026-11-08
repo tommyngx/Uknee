@@ -12,6 +12,7 @@ import yaml
 from landmark.core.model import YOLO
 
 from landmark.data.prepare import PreparedDataset, prepare_dataset
+from landmark.data.schema import REGION_NAMES
 from landmark.utils.results import KneePoseResult, adapt_yolo_result
 from uknee_cli import parse_image_size
 
@@ -85,7 +86,7 @@ class KneePose:
             head = self.backend.model.model[-1]
             self.backend.model.kpt_shape = list(head.kpt_shape)
             self.backend.model.nc = int(head.nc)
-            self.backend.model.names = {0: "femur", 1: "tibia", 2: "fibula", 3: "patella"}
+            self.backend.model.names = dict(enumerate(REGION_NAMES))
 
     @property
     def model(self):

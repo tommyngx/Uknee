@@ -177,6 +177,7 @@ class FlatPoseTrainerMixin:
             pixel_spacing=PIXEL_SPACING_MM,
             model_name=Path(self._resolved_model_source()).stem,
             elapsed_seconds=elapsed_seconds,
+            epochs_total=int(getattr(self, "epochs", 0) or 0) or None,
         )
 
     @staticmethod
@@ -367,6 +368,7 @@ class FlatPoseTrainerMixin:
             self.validator._report_model_name = Path(self._resolved_model_source()).stem
             self.validator._report_elapsed_seconds = self._training_duration_seconds
             self.validator._report_epochs_completed = max(int(self.epoch) + 1, 1)
+            self.validator._report_epochs_total = int(self.epochs)
         super().final_eval()
         if RANK in {-1, 0}:
             model_source = self._resolved_model_source()
@@ -439,6 +441,7 @@ class KneePoseValidator(PoseValidator):
         self._report_model_name = Path(str(getattr(self.args, "model", "landmark-model"))).stem
         self._report_elapsed_seconds: float | None = None
         self._report_epochs_completed: int | None = None
+        self._report_epochs_total: int | None = None
 
     def __call__(self, trainer=None, model=None):
         self.current_epoch = trainer.epoch + 1 if trainer is not None else 0
@@ -448,6 +451,7 @@ class KneePoseValidator(PoseValidator):
                 time.time() - getattr(trainer, "train_time_start", time.time()), 0.0
             )
             self._report_epochs_completed = self.current_epoch
+            self._report_epochs_total = int(getattr(trainer, "epochs", 0) or 0) or None
         return super().__call__(trainer=trainer, model=model)
 
     def init_metrics(self, model: torch.nn.Module) -> None:
@@ -622,6 +626,7 @@ class KneePoseValidator(PoseValidator):
             model_name=self._report_model_name,
             elapsed_seconds=self._report_elapsed_seconds,
             epochs_completed=self._report_epochs_completed,
+            epochs_total=self._report_epochs_total,
         )
         if self.current_epoch > 0:
             ordered = [self._sample_records[path] for path in self._sample_paths if path in self._sample_records]
@@ -629,6 +634,7 @@ class KneePoseValidator(PoseValidator):
                 ordered,
                 Path(self.save_dir) / "samples" / f"landmark_sample_e{self.current_epoch}.png",
                 epoch=self.current_epoch,
+                epochs_total=self._report_epochs_total,
             )
 
     def print_results(self) -> None:

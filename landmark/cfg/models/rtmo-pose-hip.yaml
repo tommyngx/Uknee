@@ -1,0 +1,27 @@
+# RTMO for the hip landmark schema declared by cfg/datasets/hip_point.yaml:
+# four regions femur/lesser_trochanter/greater_trochanter/acetabulum with
+# 59/7/9/10 keypoints (85 canonical landmarks, 59 padded slots per object).
+# Architecture and loss gains are identical to the knee model rtmo-pose.yaml;
+# only the schema-dependent numbers differ. Train with:
+#   python -m landmark.train --model rtmo-pose-hip --dataset landmark/cfg/datasets/hip_point.yaml ...
+landmark_family: rtmo
+architecture: rtmo
+input_channels: 3
+num_landmarks: 85
+backbone_width: 48
+backbone_depth: 2
+neck_channels: 256
+attention_heads: 8
+pose_vector_channels: 256
+dcc_feature_channels: 128
+dcc_bins: [192, 256]
+dcc_full_image_bins: true
+coordinate_loss_gain: 5.0
+proxy_loss_gain: 1.0
+visibility_loss_gain: 1.0
+bbox_loss_gain: 2.0
+mle_loss_gain: 1.0
+classification_loss_gain: 1.0
+spatial_sigma_scale: 0.25
+nc: 4
+kpt_shape: [59, 3]

@@ -5,11 +5,11 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from landmark.data.schema import REGION_KEYPOINT_COUNTS, REGION_NAMES
+from landmark.data.schema import MAX_REGION_KEYPOINTS, NUM_REGIONS, REGION_KEYPOINT_COUNTS, REGION_NAMES
 
 
 class _HeatmapHeadMetadata(nn.Module):
-    kpt_shape = [51, 3]
+    kpt_shape = [MAX_REGION_KEYPOINTS, 3]
 
     def forward(self, x):
         return x
@@ -78,7 +78,7 @@ class KneePoseExportWrapper(nn.Module):
         rows, present = [], []
         offset = 0
         for class_id, count in enumerate(REGION_KEYPOINT_COUNTS):
-            local = canonical.new_zeros((canonical.shape[0], 51, 3))
+            local = canonical.new_zeros((canonical.shape[0], MAX_REGION_KEYPOINTS, 3))
             local[:, :count] = canonical[:, offset : offset + count]
             local[:, :count, 0] *= width
             local[:, :count, 1] *= height
@@ -95,7 +95,7 @@ class KneePoseExportWrapper(nn.Module):
 
     @staticmethod
     def _canonical(detections: torch.Tensor, present: torch.Tensor) -> torch.Tensor:
-        keypoints = detections[..., 6:].view(detections.shape[0], 4, 51, 3)
+        keypoints = detections[..., 6:].view(detections.shape[0], NUM_REGIONS, MAX_REGION_KEYPOINTS, 3)
         chunks = []
         for class_id, count in enumerate(REGION_KEYPOINT_COUNTS):
             chunk = keypoints[:, class_id, :count]
