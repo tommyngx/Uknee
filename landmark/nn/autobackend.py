@@ -26,6 +26,17 @@ def default_class_names(_data: str | Path | None = None) -> dict[int, str]:
     return dict(enumerate(REGION_NAMES))
 
 
+def _requires_fp32_weights(model: nn.Module) -> bool:
+    """RTMO computes candidate selection and the DCC in float32 (see models/rtmo.py).
+
+    Those blocks cast activations to float32 regardless of the weight dtype, so a
+    ``half()`` RTMO mixes Half weights with Float activations and fails. Validation
+    and prediction therefore keep RTMO weights in float32, matching the precision
+    used for the per-epoch validation during training.
+    """
+    return getattr(model, "architecture", "") == "rtmo"
+
+
 class AutoBackend(nn.Module):
     """Small backend adapter used by the predictor; unsupported formats fail early."""
 
@@ -59,6 +70,8 @@ class AutoBackend(nn.Module):
             if fuse and hasattr(self.model, "fuse"):
                 fused = self.model.fuse(verbose=verbose)
                 self.model = fused if fused is not None else self.model
+            if self.fp16 and _requires_fp32_weights(self.model):
+                self.fp16 = False
             self.model.half() if self.fp16 else self.model.float()
             self.names = check_class_names(getattr(self.model, "names", default_class_names(data)))
             self.stride = max(int(getattr(self.model, "stride", torch.tensor([32])).max()), 32)
@@ -86,6 +99,8 @@ class AutoBackend(nn.Module):
             # load_checkpoint() deliberately returns an FP32 model, including when the
             # serialized checkpoint was stripped to FP16. Match the model precision to
             # the inputs that forward() and warmup() create for this backend.
+            if self.fp16 and _requires_fp32_weights(self.model):
+                self.fp16 = False
             self.model.half() if self.fp16 else self.model.float()
             self.names = check_class_names(getattr(self.model, "names", default_class_names(data)))
             self.stride = max(int(getattr(self.model, "stride", torch.tensor([32])).max()), 32)
@@ -108,6 +123,8 @@ class AutoBackend(nn.Module):
     def forward(self, image: torch.Tensor, augment: bool = False, visualize: bool = False, embed=None, **kwargs: Any):
         if self.fp16 and image.dtype != torch.float16:
             image = image.half()
+        elif not self.fp16 and image.dtype == torch.float16:
+            image = image.float()
         if self.format == "onnx":
             outputs = self.session.run(None, {self.input_name: image.detach().cpu().numpy()})
             tensors = [torch.from_numpy(value).to(self.device) for value in outputs]

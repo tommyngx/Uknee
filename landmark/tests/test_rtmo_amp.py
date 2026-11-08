@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -8,6 +9,7 @@ import torch
 
 from landmark import KneePose
 from landmark.models.heatmap_adapter import _rtmo_spatial_classification_loss
+from landmark.nn.autobackend import AutoBackend
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +30,32 @@ class RTMOAutomaticMixedPrecisionTests(unittest.TestCase):
             "cls": torch.arange(4).view(-1, 1).float(),
             "bboxes": torch.tensor([[0.5, 0.5, 0.6, 0.5]]).repeat(4, 1),
         }
+
+    def test_inference_backend_keeps_rtmo_weights_float32(self):
+        """final_eval/predict load best.pt with fp16=True on CUDA; RTMO must not be halved."""
+        model = KneePose(ROOT / "cfg" / "models" / "rtmo-pose.yaml").model.eval()
+        backend = AutoBackend(model, device=torch.device("cpu"), fp16=True)
+        self.assertFalse(backend.fp16)
+        self.assertEqual(next(backend.model.parameters()).dtype, torch.float32)
+        with torch.no_grad():
+            canonical = backend.forward(torch.zeros(1, 3, 64, 64).half())
+        self.assertEqual(tuple(canonical.shape), (1, 129, 3))
+        self.assertEqual(canonical.dtype, torch.float32)
+
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "best.pt"
+            torch.save({"model": model, "train_args": {"task": "pose"}}, checkpoint)
+            backend = AutoBackend(checkpoint, device=torch.device("cpu"), fp16=True)
+        self.assertFalse(backend.fp16)
+        self.assertEqual(next(backend.model.parameters()).dtype, torch.float32)
+        with torch.no_grad():
+            self.assertEqual(tuple(backend.forward(torch.zeros(1, 3, 64, 64)).shape), (1, 129, 3))
+
+    def test_inference_backend_still_halves_heatmap_models(self):
+        model = KneePose(ROOT / "cfg" / "models" / "vitpose-s-pose.yaml").model.eval()
+        backend = AutoBackend(model, device=torch.device("cpu"), fp16=True)
+        self.assertTrue(backend.fp16)
+        self.assertEqual(next(backend.model.parameters()).dtype, torch.float16)
 
     def test_rtmo_loss_does_not_call_amp_unsafe_probability_bce(self):
         model = KneePose(ROOT / "cfg" / "models" / "rtmo-pose.yaml").model.train()
