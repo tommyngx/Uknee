@@ -112,6 +112,30 @@ python -m landmark.train \
   --name rtmo_hipx02 --no-auto-export-onnx
 ```
 
+### Train tiếp từ checkpoint (fine-tune)
+
+Đưa `best.pt` của run cũ vào `--model` (kiến trúc lấy từ YAML lưu trong
+checkpoint) hoặc giữ `--model <yaml>` và thêm `--pretrained <best.pt>`; hai
+cách nạp đúng toàn bộ trọng số như nhau. Vẫn phải truyền `--dataset` cùng nhánh
+để kích hoạt schema, và đặt `--name` mới vì `--exist_ok` mặc định bật sẽ ghi
+đè run cũ. Optimizer, scheduler, warmup và bộ đếm epoch bắt đầu lại từ đầu nên
+nên hạ `--base_lr` so với lần train gốc.
+
+```bash
+python -m landmark.train \
+  --model /scratch/phenooa/runs/rtmo_hipx02/weights/best.pt \
+  --project /scratch/phenooa \
+  --dataset landmark/cfg/datasets/hip_point.yaml \
+  --dataset_link /scratch/phenooa/data/HipX02 \
+  --imgsz 736x448 --batch 32 --epochs 100 --base_lr 0.0003 \
+  --gpu '[0]' --seed 2026 --aug_strategy xray \
+  --name rtmo_hipx02_ft warmup_epochs=1
+```
+
+`--resume <last.pt>` chỉ để chạy nốt một run bị ngắt (giữ nguyên tổng epoch,
+nạp lại optimizer/EMA); `best.pt` và `last.pt` của run đã kết thúc đã bị strip
+optimizer nên không resume được, và `--resume` không tăng thêm epoch.
+
 `yolo26-pose-v9` dùng compound scale được khai báo trực tiếp trong YAML
 (hiện tại là `l`); CLI vẫn ghi `--model yolo26-pose-v9`.
 
